@@ -39,11 +39,11 @@ BarWidget {
 
     function togglePanel() {
         if (panelLoader.status === Loader.Error) {
-            notify("Animechy — Panel Load Error", "Failed to load Panel.qml — check logs", "critical");
+            notify("Hakuchō — Panel Load Error", "Failed to load Panel.qml — check logs", "critical");
             return;
         }
         if (!panelLoader.item) {
-            notify("Animechy — Panel Not Ready", "Loader status=" + panelLoader.status, "critical");
+            notify("Hakuchō — Panel Not Ready", "Loader status=" + panelLoader.status, "critical");
             return;
         }
         if (!root.backendReady) {
@@ -57,7 +57,7 @@ BarWidget {
             if (root.opened) panelLoader.item.close();
             else panelLoader.item.openFromHotkey();
         } else {
-            notify("Animechy — No toggle", "Panel item has no toggle/open", "critical");
+            notify("Hakuchō — No toggle", "Panel item has no toggle/open", "critical");
         }
     }
 
@@ -76,9 +76,9 @@ BarWidget {
 
     function notify(title, body, urgency) {
         var u = urgency || "normal";
-        var t = title || "Animechy";
+        var t = title || "Hakuchō";
         var b = body || "";
-        notifyProc.command = ["notify-send", "-a", "Animechy", "-u", u, "-i", "video-display", t, b];
+        notifyProc.command = ["notify-send", "-a", "Hakuchō", "-u", u, "-i", "video-display", t, b];
         notifyProc.running = true;
     }
 
@@ -101,13 +101,19 @@ BarWidget {
             root.backendReady = exitCode === 0;
             if (!root.backendReady) {
                 root.backendError = setupProc.errorOutput.trim() || "Backend setup failed";
-                notify("Animechy — Backend setup failed", root.backendError, "critical");
+                notify("Hakuchō — Backend setup failed", root.backendError, "critical");
                 return;
             }
+            root.backendError = "";
             var out = setupProc.setupOutput;
             var isFresh = out.indexOf("already running") === -1 && (out.indexOf("ready") !== -1);
             if (isFresh) {
-                notify("Animechy — Ready", "Local anime backend is ready", "normal");
+                notify("Hakuchō — Ready", "Local anime backend is ready", "normal");
+            }
+            if (panelLoader.item) {
+                if (typeof panelLoader.item.loadAdminStatus === "function") panelLoader.item.loadAdminStatus();
+                if (typeof panelLoader.item.loadSettings === "function") panelLoader.item.loadSettings();
+                if (typeof panelLoader.item.refreshCurrent === "function") panelLoader.item.refreshCurrent();
             }
         }
     }
@@ -116,6 +122,34 @@ BarWidget {
         id: notifyProc
     }
 
+    Timer {
+        id: healthTimer
+        interval: 6000
+        repeat: true
+        running: true
+        onTriggered: {
+            if (setupProc.running) return;
+            var xhr = new XMLHttpRequest();
+            xhr.open("GET", "http://127.0.0.1:8765/health");
+            xhr.timeout = 2500;
+            xhr.onreadystatechange = function() {
+                if (xhr.readyState === XMLHttpRequest.DONE) {
+                    if (xhr.status === 200) {
+                        root.backendReady = true;
+                        root.backendError = "";
+                    } else {
+                        root.backendReady = false;
+                        root.ensureBackend();
+                    }
+                }
+            };
+            xhr.onerror = function() {
+                root.backendReady = false;
+                root.ensureBackend();
+            };
+            xhr.send();
+        }
+    }
 
     Timer {
         id: installNotifyTimer
@@ -123,7 +157,7 @@ BarWidget {
         repeat: false
         onTriggered: {
             if (root.installing && !root.backendReady) {
-                notify("Animechy", "Setting up backend…", "normal");
+                notify("Hakuchō", "Setting up backend…", "normal");
             }
         }
     }
@@ -135,14 +169,14 @@ BarWidget {
         visible: false
         onStatusChanged: {
             if (status === Loader.Error) {
-                console.warn("Animechy Panel failed to load:", source, "error:", panelLoader.sourceComponent ? "" : "component null");
-                root.notify("Animechy — Loader Error", "Panel.qml failed to load (status Error)", "critical");
+                console.warn("Hakuchō Panel failed to load:", source, "error:", panelLoader.sourceComponent ? "" : "component null");
+                root.notify("Hakuchō — Loader Error", "Panel.qml failed to load (status Error)", "critical");
             } else if (status === Loader.Ready) {
-                console.log("Animechy Panel loaded OK");
+                console.log("Hakuchō Panel loaded OK");
             }
         }
         onLoaded: {
-            console.log("Animechy Panel onLoaded");
+            console.log("Hakuchō Panel onLoaded");
             root.injectPanel();
             Qt.callLater(root.injectPanel);
         }
@@ -155,9 +189,9 @@ BarWidget {
         // ▶ play triangle — distinct from OmaMovie's  film, universally rendered
         text: "ア"
         slotSize: Style.bar.statusSlot
-        tooltipText: root.installing ? "Animechy • installing backend …" :
-                     (root.backendReady ? "Animechy • search & watch anime in mpv (sub/dub)" :
-                      (root.backendError || "Animechy • backend not ready; click to retry"))
+        tooltipText: root.installing ? "Hakuchō • installing backend …" :
+                     (root.backendReady ? "Hakuchō • search & watch anime in mpv (sub/dub)" :
+                      (root.backendError || "Hakuchō • backend not ready; click to retry"))
         onPressed: root.togglePanel()
     }
 
