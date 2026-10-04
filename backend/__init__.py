@@ -1,0 +1,1 @@
+"""Animechy local streaming backend."""
