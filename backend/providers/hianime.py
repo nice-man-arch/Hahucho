@@ -11,7 +11,7 @@ from urllib.request import Request, urlopen
 from .base import Provider, ProviderError
 
 BASE = "https://hianime.at"
-log = logging.getLogger("animechy")
+log = logging.getLogger("hakucho")
 HEADERS = {"User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/124 Safari/537.36",
            "X-Requested-With": "XMLHttpRequest", "Referer": BASE + "/"}
 
@@ -30,6 +30,15 @@ def _safe_url(url: str, hosts: set[str] | None = None) -> str:
     return url
 
 
+def _safe_cover_url(url: str) -> str:
+    if not url or not isinstance(url, str):
+        return ""
+    p = urlparse(url)
+    if p.scheme in ("http", "https") and p.hostname:
+        return url
+    return ""
+
+
 def _media_url(url: str) -> str:
     host = (urlparse(url).hostname or "").lower()
     allowed = host.endswith(".dramahot.top") or host.endswith(".drama1.cfd")
@@ -39,13 +48,13 @@ def _media_url(url: str) -> str:
 class HiAnimeProvider(Provider):
     name = "hianime"
 
-    def _get(self, url: str, referer: str | None = None, timeout: float = 8.0) -> bytes:
+    def _get(self, url: str, referer: str | None = None, timeout: float = 6.0) -> bytes:
         if not _safe_url(url):
             raise ProviderError("Provider returned an unsafe URL", "provider_unavailable")
+        headers = dict(HEADERS)
+        if referer:
+            headers["Referer"] = referer
         try:
-            headers = dict(HEADERS)
-            if referer:
-                headers["Referer"] = referer
             with urlopen(Request(url, headers=headers), timeout=timeout) as r:
                 body = r.read(8_000_000)
                 if r.status == 403 or b"Just a moment" in body[:5000]:
@@ -66,36 +75,54 @@ class HiAnimeProvider(Provider):
         except TimeoutError as e:
             raise ProviderError("Network timeout contacting HiAnime", "network_failure") from e
 
-    def _text(self, url: str, timeout: float = 8.0) -> str:
+    def _text(self, url: str, timeout: float = 6.0) -> str:
         return self._get(url, timeout=timeout).decode("utf-8", "replace")
 
-    def search(self, query: str) -> list[dict]:
-        html = self._text(f"{BASE}/search?keyword={quote(query)}", timeout=4.0)
+    def _parse_film_html(self, html: str) -> list[dict]:
         out, seen = [], set()
-        for chunk in re.findall(r'<h3\s+class="film-name"[^>]*>(.*?)</h3>', html, re.I | re.S):
-            a = re.search(r'<a\b[^>]*>', chunk, re.I | re.S)
+        for m in re.finditer(r"(?:<div[^>]*class=\"[^\"]*flw-item[^\"]*\"[^>]*>|<div[^>]*class=\"film-poster\"[^>]*>).*?<h3[^>]*class=\"[^\"]*film-name[^\"]*\"[^>]*>.*?</h3>", html, re.S):
+            chunk = m.group(0)
+            a = re.search(r"<h3[^>]*class=\"[^\"]*film-name[^\"]*\"[^>]*>\s*<a\b([^>]*)>(.*?)</a>", chunk, re.S)
             if not a:
                 continue
-            tag = a.group(0)
-            href = _safe_url(urljoin(BASE, _attr(tag, "href")), {"hianime.at"})
-            path = urlparse(href).path.rstrip("/") if href else ""
-            aid = path.rsplit("/", 1)[-1]
-            title = unescape(_attr(tag, "title"))
+            tag_attrs, title_html = a.group(1), a.group(2)
+            href = _attr("<a " + tag_attrs + ">", "href")
+            title = unescape(re.sub(r"<[^>]+>", "", title_html)).strip()
+            full_href = urljoin(BASE, href)
+            aid = urlparse(full_href).path.rstrip("/").rsplit("/", 1)[-1]
             if not aid or aid in seen or not title:
                 continue
             seen.add(aid)
-            pos = html.find(tag)
-            neighborhood = html[max(0, pos - 1800):pos + 1000]
-            poster = re.search(r'<img\b[^>]*(?:data-src|src)=["\']([^"\']+)', neighborhood, re.I)
-            cover = _safe_url(urljoin(BASE, poster.group(1)), {"hianime.at", "cdn.noitatnemucod.net", "cdn.anipixcdn.co"}) if poster else ""
+
+            poster_m = re.search(r"<img\b[^>]*(?:data-src|src)=[\"']([^\"']+)[\"']", chunk, re.I)
+            raw_cover = poster_m.group(1) if poster_m else ""
+            cover = urljoin(BASE, raw_cover) if raw_cover else ""
+            if not _safe_cover_url(cover):
+                cover = ""
             out.append({"id": "hianime:" + aid, "provider": self.name, "title": title, "cover": cover, "year": "", "rating": None})
-            if len(out) >= 40:
+            if len(out) >= 60:
                 break
         return out
 
+    def search(self, query: str) -> list[dict]:
+        html = self._text(f"{BASE}/search?keyword={quote(query)}", timeout=5.0)
+        return self._parse_film_html(html)
+
+    def trending(self) -> list[dict]:
+        html = self._text(f"{BASE}/top-airing", timeout=5.0)
+        return self._parse_film_html(html)
+
+    def genre(self, genre_name: str) -> list[dict]:
+        slug = genre_name.strip().lower().replace(" ", "-")
+        try:
+            html = self._text(f"{BASE}/genres/{quote(slug)}", timeout=5.0)
+            return self._parse_film_html(html)
+        except Exception:
+            return self.search(genre_name)
+
     def details(self, anime_id: str) -> dict:
         slug = _anime_id(str(anime_id).removeprefix("hianime:"))
-        html = self._text(f"{BASE}/{quote(slug, safe='-')}")
+        html = self._text(f"{BASE}/{quote(slug, safe='-')}", timeout=6.0)
         title = ""
         m = re.search(r'<h2[^>]*class="[^" ]*film-name[^" ]*[^>]*>(.*?)</h2>', html, re.I | re.S)
         if m:
@@ -106,21 +133,40 @@ class HiAnimeProvider(Provider):
         if m:
             desc = unescape(re.sub(r"<[^>]+>", " ", m.group(1))).strip()
         poster = re.search(r'<meta\s+property="og:image"\s+content="([^"]+)', html, re.I) or re.search(r'<img\b[^>]*class="[^"]*film-poster-img[^\"]*"[^>]*(?:data-src|src)=["\']([^"\']+)', html, re.I)
-        cover = _safe_url(urljoin(BASE, poster.group(1)), {"hianime.at", "cdn.noitatnemucod.net", "cdn.anipixcdn.co"}) if poster else ""
+        cover = _safe_cover_url(urljoin(BASE, poster.group(1))) if poster else ""
         mal = re.search(r'myanimelist\.net/anime/(\d+)', html, re.I)
-        return {"id": "hianime:" + slug, "provider": self.name, "title": title, "description": desc, "intro": desc[:280], "cover": {"url": cover}, "coverUrl": cover, "year": "", "genre": "", "mal_id": int(mal.group(1)) if mal else None, "anilist_id": None}
+        pos = html.find("film-name")
+        header_chunk = html[pos:pos+4000] if pos != -1 else ""
+        has_sub = "tick-sub" in header_chunk if header_chunk else True
+        has_dub = "tick-dub" in header_chunk
+        return {"id": "hianime:" + slug, "provider": self.name, "title": title, "description": desc, "intro": desc[:280], "cover": {"url": cover}, "coverUrl": cover, "year": "", "genre": "", "mal_id": int(mal.group(1)) if mal else None, "anilist_id": None, "has_sub": has_sub, "has_dub": has_dub}
 
     def episodes(self, anime_id: str) -> list[dict]:
         aid = _anime_id(str(anime_id).removeprefix("hianime:"))
         num = re.search(r"-(\d+)$", aid).group(1)
         payload = json.loads(self._get(f"{BASE}/api/theme/episode/list/{num}").decode())
         html = payload.get("html", "").replace("\\/", "/")
+        has_dub = False
+        try:
+            main_html = self._text(f"{BASE}/{aid}", timeout=4.0)
+            pos = main_html.find("film-name")
+            header_chunk = main_html[pos:pos+4000] if pos != -1 else ""
+            has_dub = "tick-dub" in header_chunk
+        except Exception:
+            has_dub = False
         out = []
         for tag in re.findall(r'<a\b[^>]*class="[^"]*ep-item[^"]*"[^>]*>', html, re.I):
             number, eid = _attr(tag, "data-number"), _attr(tag, "data-id")
             if number and eid:
+                servers = [
+                    {"server": "zokoanime", "provider": self.name, "language": "sub", "episode_id": eid, "title": f"Episode {number}"}
+                ]
+                if has_dub:
+                    servers.append(
+                        {"server": "zokoanime", "provider": self.name, "language": "dub", "episode_id": eid, "title": f"Episode {number}"}
+                    )
                 out.append({"id": eid, "number": number, "title": f"Episode {number}", "filler": False,
-                            "anime_id": "hianime:" + aid})
+                            "anime_id": "hianime:" + aid, "servers": servers})
         if not out and payload.get("totalItems", 0):
             raise ProviderError("HiAnime changed its episode response format", "provider_unavailable")
         return out
@@ -161,8 +207,6 @@ class HiAnimeProvider(Provider):
         master = _media_url(config.get("src", ""))
         if not master:
             raise ProviderError("Player did not return a safe HLS URL", "no_stream")
-        log.debug("hianime master playlist URL episode_id=%s url=%s", episode_id, master)
-        playlist = self._get(master, embed).decode("utf-8", "replace")
         subtitles = []
         for sub in config.get("subtitles", []):
             u = _media_url(urljoin(embed, sub.get("src", "")))
@@ -170,19 +214,7 @@ class HiAnimeProvider(Provider):
                 subtitles.append(u)
         referer = urlparse(embed)
         player_referer = f"{referer.scheme}://{referer.netloc}/"
-        variants = []
-        lines = [line.strip() for line in playlist.splitlines()]
-        for i, line in enumerate(lines):
-            if not line.startswith("#EXT-X-STREAM-INF") or i + 1 >= len(lines):
-                continue
-            hmatch = re.search(r"RESOLUTION=\d+x(\d+)", line)
-            quality = f"{hmatch.group(1)}p" if hmatch else "Auto"
-            u = _media_url(urljoin(master, lines[i + 1]))
-            if u:
-                variants.append({"quality": quality, "resolution": int(hmatch.group(1)) if hmatch else 0, "url": u, "resourceLink": u, "link": u, "subtitles": subtitles, "language": lang, "referer": player_referer})
-        if not variants:
-            variants = [{"quality": "Auto", "resolution": 0, "url": master, "resourceLink": master, "link": master, "subtitles": subtitles, "language": lang, "referer": player_referer}]
-        return sorted(variants, key=lambda x: x["resolution"], reverse=True)
+        return [{"quality": "1080p", "resolution": 1080, "url": master, "resourceLink": master, "link": master, "subtitles": subtitles, "language": lang, "referer": player_referer}]
 
 
 def _anime_id(value: str) -> str:
