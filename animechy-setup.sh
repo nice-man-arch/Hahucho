@@ -8,7 +8,7 @@ python3 -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 12) else 1
 command -v curl >/dev/null || { echo 'curl is required (Arch package: curl)' >&2; exit 1; }
 command -v mpv >/dev/null || say 'mpv is not installed yet; install it with: sudo pacman -S mpv'
 command -v ffmpeg >/dev/null || say 'Downloads need ffmpeg; install it with: sudo pacman -S ffmpeg'
-if curl -fsS --max-time 1 http://127.0.0.1:8765/health 2>/dev/null | python3 -c 'import json,sys; raise SystemExit(0 if json.load(sys.stdin).get("download_manager",0) >= 4 else 1)' 2>/dev/null; then
+if python3 -c 'import urllib.request, json, sys; res = json.loads(urllib.request.urlopen("http://127.0.0.1:8765/health", timeout=1).read().decode()); sys.exit(0 if res.get("download_manager", 0) >= 4 else 1)' 2>/dev/null; then
   say 'backend already running'
 else
   # A pre-download backend may already own the port. Restart only a process

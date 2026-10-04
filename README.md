@@ -25,19 +25,13 @@ Animechy is a Quickshell/Qt Quick anime client for Omarchy. The existing Animech
 
 ## 🚀 Quick Install (1-Command Setup)
 
-### Option 1: Git One-Liner (Recommended)
+### Option 1: Git Clone (Manual Setup)
 
 ```sh
 git clone https://github.com/nice-man-arch/animechy.git ~/.config/omarchy/plugins/io.github.nice-man-arch.animechy && omarchy-shell shell rescanPlugins && omarchy plugin enable io.github.nice-man-arch.animechy
 ```
 
-### Option 2: Curl Installer Script
-
-```sh
-curl -fsSL https://raw.githubusercontent.com/nice-man-arch/animechy/main/animechy-setup.sh | bash
-```
-
-### Option 3: From Local Checkout
+### Option 2: Local Checkout Script
 
 ```sh
 ./install.sh
