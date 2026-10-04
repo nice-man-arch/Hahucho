@@ -1,0 +1,12 @@
+{
+  "schemaVersion": 1,
+  "id": "tenzin.animechy",
+  "name": "Animechy",
+  "version": "2.1.0",
+  "author": "tenzin",
+  "description": "Search, stream and download anime from your Omarchy bar through a local provider backend.",
+  "kinds": ["bar-widget"],
+  "entryPoints": {
+    "barWidget": "BarWidget.qml"
+  }
+}
