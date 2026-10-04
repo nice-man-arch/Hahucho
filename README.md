@@ -4,6 +4,18 @@ Animechy is a Quickshell/Qt Quick anime client for Omarchy. The existing Animech
 
 ---
 
+## 📸 Screenshots
+
+| Discover & Trending | Anime Details & Quality Selection |
+| :---: | :---: |
+| ![Discover](screenshots/discover.png) | ![Details](screenshots/details.png) |
+
+| Background Downloads Manager | Settings & Preferences |
+| :---: | :---: |
+| ![Downloads](screenshots/downloads.png) | ![Settings](screenshots/settings.png) |
+
+---
+
 ## Credits & Acknowledgements
 
 - **Original Creator**: **Yeshey Tenzin** ([@yesheytenzin](https://github.com/yesheytenzin)) – Creator of the original [Animechy](https://github.com/yesheytenzin/animechy.git) plugin for Omarchy.
