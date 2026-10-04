@@ -2,17 +2,52 @@
 
 Animechy is a Quickshell/Qt Quick anime client for Omarchy. The existing Animechy UI and HiAnime source adapter remain in place; a separate Python backend now coordinates HiAnime and Hiyori/Miruro provider data. mpv handles video playback.
 
-## Install and launch
+---
 
-Requirements: Omarchy with Quickshell, Python 3.12+, `curl`, `mpv`, and `ffmpeg`. Python uses only its standard library. The backend stores SQLite state in `${XDG_CACHE_HOME:-~/.cache}/animechy/animechy.sqlite3`.
+## Credits & Acknowledgements
 
-From this checkout:
+- **Original Creator**: **Yeshey Tenzin** ([@yesheytenzin](https://github.com/yesheytenzin)) – Creator of the original [Animechy](https://github.com/yesheytenzin/animechy.git) plugin for Omarchy.
+- **Inspiration**: [pystardust/ani-cli](https://github.com/pystardust/ani-cli) for anime streaming reference and scraper concepts.
+
+---
+
+## 🚀 Quick Install (1-Command Setup)
+
+### Option 1: Git One-Liner (Recommended)
+
+```sh
+git clone https://github.com/nice-man-arch/animechy.git ~/.config/omarchy/plugins/tenzin.animechy && omarchy-shell shell rescanPlugins && omarchy plugin enable tenzin.animechy
+```
+
+### Option 2: Curl Installer Script
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/nice-man-arch/animechy/main/animechy-setup.sh | bash
+```
+
+### Option 3: From Local Checkout
 
 ```sh
 ./install.sh
 ```
 
-The installer copies the plugin into `~/.config/omarchy/plugins/tenzin.animechy`, asks Omarchy to rescan and enable it, and refuses to overwrite an existing plugin directory. Click **ア** in the top bar. Plugin startup launches the loopback backend and logs to `${XDG_STATE_HOME:-~/.local/state}/animechy/backend.log`. Downloads are saved under `~/Videos/Animechy`; set `ANIMECHY_DOWNLOAD_DIR` before starting the backend to change the destination.
+> **Why is the installation only one command?**
+> 1. **Zero Compilation / No Virtualenv**: Animechy's backend uses Python 3's built-in standard library (`urllib`, `sqlite3`, `http.server`, `json`). It requires no `pip install`, wheels, or C build tools.
+> 2. **Standard Plugin Discovery**: Omarchy / Quickshell automatically looks for plugins inside `~/.config/omarchy/plugins/<id>`.
+> 3. **Self-Managing Lifecycle**: When the top bar widget loads, it automatically starts the local backend server (`backend/server.py`) and manages its lifecycle.
+> 4. **Hot-Reloading**: `omarchy-shell shell rescanPlugins` immediately loads the plugin into the running desktop environment without requiring a system reboot or session restart.
+
+---
+
+## Requirements
+
+- **Omarchy** with Quickshell
+- **Python 3.12+** (standard library only)
+- `curl`, `mpv`, and `ffmpeg` (for playback and downloads)
+
+The backend stores SQLite state in `${XDG_CACHE_HOME:-~/.cache}/animechy/animechy.sqlite3`.
+
+Click **ア** in the top bar to open Animechy. Plugin startup launches the loopback backend and logs to `${XDG_STATE_HOME:-~/.local/state}/animechy/backend.log`. Downloads are saved under `~/Videos/Animechy` (override with `ANIMECHY_DOWNLOAD_DIR`).
 
 To launch the backend manually while developing:
 
