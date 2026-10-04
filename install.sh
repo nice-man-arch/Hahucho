@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-ID="tenzin.animechy"
+ID="io.github.nice-man-arch.animechy"
 DEST="${XDG_CONFIG_HOME:-$HOME/.config}/omarchy/plugins/$ID"
 command -v python3 >/dev/null || { echo 'Install Python 3 with: sudo pacman -S python' >&2; exit 1; }
 python3 -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 12) else 1)' || { echo 'Python 3.12 or newer is required.' >&2; exit 1; }

@@ -28,7 +28,7 @@ Animechy is a Quickshell/Qt Quick anime client for Omarchy. The existing Animech
 ### Option 1: Git One-Liner (Recommended)
 
 ```sh
-git clone https://github.com/nice-man-arch/animechy.git ~/.config/omarchy/plugins/tenzin.animechy && omarchy-shell shell rescanPlugins && omarchy plugin enable tenzin.animechy
+git clone https://github.com/nice-man-arch/animechy.git ~/.config/omarchy/plugins/io.github.nice-man-arch.animechy && omarchy-shell shell rescanPlugins && omarchy plugin enable io.github.nice-man-arch.animechy
 ```
 
 ### Option 2: Curl Installer Script
@@ -147,7 +147,7 @@ curl -fsS 'https://api.hiyori.tv/search?query=one%20piece' | python -m json.tool
 - **Server/source failure:** leave the episode open and select another server from those actually returned by the provider.
 - **Subtitles/audio:** external subtitle tracks are sent to mpv; HLS audio selection is handled by mpv. A provider may hard-sub its stream or provide no external subtitle file.
 - **mpv failure:** run `mpv --version` and install it with `sudo pacman -S mpv`.
-- **Widget missing:** use `omarchy plugin list`, enable `tenzin.animechy`, and rescan plugins with `omarchy-shell shell rescanPlugins`.
+- **Widget missing:** use `omarchy plugin list`, enable `io.github.nice-man-arch.animechy`, and rescan plugins with `omarchy-shell shell rescanPlugins`.
 
 ## License
 

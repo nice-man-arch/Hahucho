@@ -6,7 +6,7 @@ import qs.Ui
 
 BarWidget {
     id: root
-    moduleName: "tenzin.animechy"
+    moduleName: "io.github.nice-man-arch.animechy"
 
     visible: true
     implicitWidth: button.implicitWidth

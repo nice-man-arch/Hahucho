@@ -1265,7 +1265,7 @@ Panel {
         return false;
     }
 
-    moduleName: "tenzin.animechy"
+    moduleName: "io.github.nice-man-arch.animechy"
     implicitWidth: 820
     implicitHeight: 580
 
