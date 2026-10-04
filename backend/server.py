@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Small local JSON API for Animechy. No web framework or third-party modules required."""
+"""Small local JSON API for Hakuchō. No web framework or third-party modules required."""
 import json
 import logging
 import os
@@ -27,41 +27,78 @@ from providers.base import ProviderError
 from cache import Cache
 import downloads
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s animechy: %(message)s")
-log = logging.getLogger("animechy")
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s hakucho: %(message)s")
+log = logging.getLogger("hakucho")
 VERSION = "2.1.0"
-DEBUG_SOURCES = os.environ.get("ANIMECHY_DEBUG_SOURCES", "").lower() in ("1", "true", "yes", "on")
+DEBUG_SOURCES = (os.environ.get("HAKUCHO_DEBUG_SOURCES") or os.environ.get("ANIMECHY_DEBUG_SOURCES", "")).lower() in ("1", "true", "yes", "on")
 if DEBUG_SOURCES:
     log.setLevel(logging.DEBUG)
-DATA = Path(os.environ.get("XDG_CACHE_HOME", Path.home() / ".cache")) / "animechy" / "animechy.sqlite3"
+DATA = Path(os.environ.get("XDG_CACHE_HOME", Path.home() / ".cache")) / "hakucho" / "hakucho.sqlite3"
+OLD_DATA = Path(os.environ.get("XDG_CACHE_HOME", Path.home() / ".cache")) / "animechy" / "animechy.sqlite3"
+if not DATA.exists() and OLD_DATA.exists():
+    try:
+        DATA.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(OLD_DATA, DATA)
+    except Exception:
+        pass
 cache = Cache(DATA)
 providers = [HiAnimeProvider(), HiyoriProvider()]
 live_sources = {}
 _saved_settings = cache.settings()
 downloads.configure(cache, _saved_settings.get("download_location"), _saved_settings.get("download_max_simultaneous", 2))
 
-COVER_CACHE_DIR = Path(os.environ.get("XDG_CACHE_HOME", Path.home() / ".cache")) / "animechy" / "covers"
+COVER_CACHE_DIR = Path(os.environ.get("XDG_CACHE_HOME", Path.home() / ".cache")) / "hakucho" / "covers"
 COVER_CACHE_DIR.mkdir(parents=True, exist_ok=True)
-_cover_pool = ThreadPoolExecutor(max_workers=8)
+_cover_pool = ThreadPoolExecutor(max_workers=16)
 
 
 def _download_cover(url, filepath):
     try:
-        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0 Animechy"})
-        with urllib.request.urlopen(req, timeout=5) as r:
+        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36"}
+        if "hianime" in str(url) or "anipixcdn" in str(url):
+            headers["Referer"] = "https://hianime.to/"
+        req = urllib.request.Request(url, headers=headers)
+        with urllib.request.urlopen(req, timeout=6) as r:
             data = r.read()
-            if data:
-                filepath.write_bytes(data)
+            if data and len(data) > 100:
+                tmp = filepath.with_suffix(".tmp")
+                tmp.write_bytes(data)
+                tmp.replace(filepath)
     except Exception:
         pass
+
+
+def resolve_cover_for_item(item):
+    if not isinstance(item, dict):
+        return ""
+    cover = item.get("cover") or item.get("coverUrl") or ""
+    if isinstance(cover, dict):
+        cover = cover.get("url") or cover.get("extraLarge") or cover.get("large") or cover.get("medium") or ""
+    cover = str(cover or "").strip()
+    if cover.startswith("{") and ("'url':" in cover or '"url":' in cover):
+        try:
+            cj = json.loads(cover.replace("'", '"'))
+            if isinstance(cj, dict): cover = str(cj.get("url") or "")
+        except Exception:
+            pass
+    if not cover or not cover.startswith("http"):
+        aid = item.get("id") or item.get("anime_id")
+        if aid:
+            cached = cache.get("details:" + str(aid))
+            if cached and isinstance(cached, dict):
+                c = cached.get("cover")
+                if isinstance(c, dict): cover = c.get("url") or c.get("extraLarge") or c.get("large") or ""
+                elif isinstance(c, str): cover = c
+    if cover and cover.startswith("http"):
+        item["cover"] = cover
+        item["coverUrl"] = cover
+    return cover
 
 
 def attach_cover_cache(item):
     if not isinstance(item, dict):
         return item
-    cover_url = item.get("cover") or item.get("coverUrl") or ""
-    if isinstance(cover_url, dict):
-        cover_url = cover_url.get("url") or cover_url.get("extraLarge") or cover_url.get("large") or ""
+    cover_url = resolve_cover_for_item(item)
     if not cover_url or not isinstance(cover_url, str) or not cover_url.startswith("http"):
         return item
     h = hashlib.md5(cover_url.encode("utf-8")).hexdigest()
@@ -158,11 +195,16 @@ def monitor_playback(process, socket_path, metadata):
                                     continue
                                 try:
                                     msg = json.loads(line.decode(errors="ignore"))
-                                vi = msg.get("event")
-                                if vi == "end-file":
+                                except Exception:
+                                    continue
+
+                                ev = msg.get("event")
+                                if ev == "end-file":
+                                    # ONLY natural eof means completed episode.
+                                    # 'stop', 'quit', or manual window close are NOT eof!
                                     if msg.get("reason") == "eof":
                                         eof_reached = True
-                                elif vi == "property-change":
+                                elif ev == "property-change":
                                     pname = msg.get("name")
                                     pdata = msg.get("data")
                                     if pname == "time-pos" and isinstance(pdata, (int, float)):
@@ -235,7 +277,7 @@ def monitor_playback(process, socket_path, metadata):
             except Exception as e:
                 log.warning("Auto-next episode trigger failed for %s: %s", metadata, e)
 
-    threading.Thread(target=run, daemon=True, name="animechy-mpv-progress").start()
+    threading.Thread(target=run, daemon=True, name="hakucho-mpv-progress").start()
 
 
 def play_next_episode(metadata):
@@ -343,7 +385,7 @@ def play_next_episode(metadata):
 
     if shutil.which("notify-send"):
         try:
-            subprocess.Popen(["notify-send", "Animechy",
+            subprocess.Popen(["notify-send", "Hakuchō",
                               f"Autoplay next: {next_metadata['title']} — Episode {next_metadata['episode']}"],
                              stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
         except OSError:
@@ -369,6 +411,8 @@ def provider_for_id(anime_id):
 
 
 def provider_call(method, *args):
+    # Source references are provider-owned. Never probe the registry: doing so can
+    # accidentally hand an exact Hiyori watch path to an unrelated adapter.
     if method == "sources":
         provider_name, episode_id, language = args
         p = next((item for item in providers if item.name == str(provider_name)), None)
@@ -378,19 +422,31 @@ def provider_call(method, *args):
             log.debug("source request provider=%s exact_episode_id=%s language=%s", p.name, episode_id, language)
         return p.sources(str(episode_id), language)
     if method in ("trending", "discover"):
-        hiyori = next((p for p in providers if p.name == "hiyori"), None)
-        if hiyori and hasattr(hiyori, "trending"):
-            items = hiyori.trending(*args)
-            attach_covers(items)
-            return items
+        pref = getattr(cache, "get_setting", lambda *a, **kw: "all")("preferred_provider", "all")
+        active = [p for p in providers if p.name == pref] if pref in ("hianime", "hiyori") else sorted(providers, key=lambda p: 0 if p.name == "hiyori" else 1)
+        for p in active:
+            if hasattr(p, "trending"):
+                try:
+                    items = p.trending(*args)
+                    if items:
+                        attach_covers(items)
+                        return items
+                except Exception as e:
+                    log.warning("provider=%s trending failed: %s", p.name, e)
         return []
     if method == "genre":
         genre_name = args[0] if args else ""
-        hiyori = next((p for p in providers if p.name == "hiyori"), None)
-        if hiyori and hasattr(hiyori, "genre"):
-            items = hiyori.genre(genre_name)
-            attach_covers(items)
-            return items
+        pref = getattr(cache, "get_setting", lambda *a, **kw: "all")("preferred_provider", "all")
+        active = [p for p in providers if p.name == pref] if pref in ("hianime", "hiyori") else sorted(providers, key=lambda p: 0 if p.name == "hiyori" else 1)
+        for p in active:
+            if hasattr(p, "genre"):
+                try:
+                    items = p.genre(genre_name)
+                    if items:
+                        attach_covers(items)
+                        return items
+                except Exception as e:
+                    log.warning("provider=%s genre failed: %s", p.name, e)
         return []
     if method == "search":
         found, errors = [], []
@@ -400,7 +456,7 @@ def provider_call(method, *args):
         try:
             tasks = {pool.submit(getattr(p, method), *args): p for p in active_providers}
             try:
-                for task in as_completed(tasks, timeout=3.5):
+                for task in as_completed(tasks, timeout=8.0):
                     p = tasks[task]
                     try:
                         res = task.result()
@@ -419,13 +475,14 @@ def provider_call(method, *args):
         if found:
             attach_covers(found)
             return found
-        if pref in ("hianime", "hiyori") and len(active_providers) < len(providers):
+        auto_fallback = getattr(cache, "get_setting", lambda *a, **kw: False)("auto_fallback", False)
+        if auto_fallback and pref in ("hianime", "hiyori") and len(active_providers) < len(providers):
             fallback_providers = [p for p in providers if p.name != pref]
             fpool = ThreadPoolExecutor(max_workers=max(1, len(fallback_providers)))
             try:
                 tasks = {fpool.submit(getattr(p, method), *args): p for p in fallback_providers}
                 try:
-                    for task in as_completed(tasks, timeout=3.5):
+                    for task in as_completed(tasks, timeout=8.0):
                         p = tasks[task]
                         try:
                             res = task.result()
@@ -446,28 +503,24 @@ def provider_call(method, *args):
         if method == "details" and isinstance(result, dict):
             attach_cover_cache(result)
         if method == "episodes" and p.name == "hianime":
-            hiyori = next((provider for provider in providers if provider.name == "hiyori"), None)
-            if hiyori:
+            pref = getattr(cache, "get_setting", lambda *a, **kw: "all")("preferred_provider", "all")
+            if pref == "all":
                 try:
-                    detail = cache.get("details:" + str(args[0])) or p.details(raw)
-                    mal_id = detail.get("mal_id")
-                    if mal_id:
-                        canonical = "mal:" + str(mal_id)
-                        cache.map_provider(canonical, "hianime", str(args[0]))
-                        matches = [item for item in hiyori.search(detail.get("title") or "") if str(item.get("mal_id")) == str(mal_id)]
-                        if matches:
-                            ref = str(matches[0]["id"])
-                            cache.map_provider(canonical, "hiyori", ref)
-                            extra = hiyori.episodes(ref)
-                            by_number = {str(item["number"]): item for item in extra}
-                            for episode in result:
-                                match = by_number.get(str(episode["number"]))
-                                if match:
-                                    episode["servers"] = match["servers"]
-                                    episode["anilist_id"] = match.get("anilist_id")
-                                    episode["mal_id"] = mal_id
-                except ProviderError as e:
-                    log.warning("cross-provider mapping hianime→hiyori kind=%s: %s",e.kind,e)
+                    detail = cache.get("details:" + str(args[0]))
+                    if detail and isinstance(detail, dict) and detail.get("mal_id"):
+                        canonical = "mal:" + str(detail["mal_id"])
+                        refs = cache.provider_refs(canonical) if hasattr(cache, "provider_refs") else {}
+                        ref = refs.get("hiyori")
+                        if ref:
+                            extra = cache.get("episodes:" + ref)
+                            if extra and isinstance(extra, list):
+                                by_number = {str(item["number"]): item for item in extra}
+                                for episode in result:
+                                    match = by_number.get(str(episode["number"]))
+                                    if match and match.get("servers"):
+                                        episode["servers"] = (episode.get("servers") or []) + match["servers"]
+                except Exception as e:
+                    log.debug("cross-provider mapping cache lookup: %s", e)
         return result
     errors = []
     for p in providers:
@@ -495,7 +548,8 @@ def handle_get(path, qs):
     if path == "/search":
         q = qs.get("q", [""])[0].strip()
         if not q or len(q) > 120: raise ProviderError("Query must be 1–120 characters", "invalid_input")
-        items = call_cached("search:" + q.casefold(), 3600, "search", q)
+        pref = getattr(cache, "get_setting", lambda *a, **kw: "all")("preferred_provider", "all")
+        items = call_cached(f"search:{pref}:{q.casefold()}", 3600, "search", q)
         attach_covers(items)
         return {"ok": True, "items": items, **({"kind": "no_results"} if not items else {})}
     m = re.fullmatch(r"/anime/([^/]+)(/episodes)?", path)
@@ -515,6 +569,9 @@ def handle_get(path, qs):
                     if status:
                         ep["watch_position"] = status.get("position", 0)
                         ep["watch_duration"] = status.get("duration", 0)
+                    else:
+                        ep["watch_position"] = 0
+                        ep["watch_duration"] = 0
             return {"ok": True, "items": items}
         val = call_cached("details:" + aid, 86400, "details", aid)
         if isinstance(val, dict): attach_cover_cache(val)
@@ -533,8 +590,17 @@ def handle_get(path, qs):
         items = cache.recent_items()
         attach_covers(items)
         return {"ok": True, "items": items}
-    if path == "/history": return {"ok": True, "items": cache.history()}
-    if path == "/favorites": return {"ok": True, "items": cache.favorites()}
+    if path == "/history":
+        items = cache.history()
+        attach_covers(items)
+        return {"ok": True, "items": items}
+    if path == "/favorites":
+        items = cache.favorites()
+        for f in items:
+            meta = f.get("metadata") or {}
+            f["cover"] = meta.get("cover") or meta.get("coverUrl") or ""
+        attach_covers(items)
+        return {"ok": True, "items": items}
     raise ProviderError("Route not found", "not_found")
 
 
@@ -546,7 +612,8 @@ def handle_compat(req):
     if cmd in ("search", "suggest"):
         q = str(req.get("q", "")).strip()
         if len(q) < 2: return {"ok": True, "items": [], "suggestions": []}
-        items = call_cached("search:" + q.casefold(), 3600, "search", q)
+        pref = getattr(cache, "get_setting", lambda *a, **kw: "all")("preferred_provider", "all")
+        items = call_cached(f"search:{pref}:{q.casefold()}", 3600, "search", q)
         attach_covers(items)
         return {"ok": True, "items": items, "suggestions": [{"id": x["id"], "name": x["title"], "cover": x.get("coverPath") or x.get("cover", "")} for x in items[:8]], **({"kind": "no_results"} if not items else {})}
     if cmd == "details":
@@ -567,6 +634,9 @@ def handle_compat(req):
                 if status:
                     ep["watch_position"] = status.get("position", 0)
                     ep["watch_duration"] = status.get("duration", 0)
+                else:
+                    ep["watch_position"] = 0
+                    ep["watch_duration"] = 0
         return {"ok": True, "items": items}
     if cmd == "streams":
         aid, number = str(req.get("id", "")), str(req.get("episode", ""))
@@ -582,6 +652,8 @@ def handle_compat(req):
         if isinstance(server, dict) and server.get("provider"):
             if server.get("language") != lang:
                 raise ProviderError("The selected server does not provide that language", "episode_unavailable")
+            # Require the option to belong to this exact episode; this guards stale or
+            # mismatched UI state while preserving Hiyori's exact watch reference.
             if server not in ep.get("servers", []):
                 raise ProviderError("Selected server is not available for this episode", "episode_unavailable")
             exact_id = str(server["episode_id"])
@@ -603,33 +675,50 @@ def handle_compat(req):
             canonical_id = ("mal:" + str(detail.get("mal_id"))) if detail.get("mal_id") else ("anilist:" + str(detail.get("anilist_id"))) if detail.get("anilist_id") else "unknown"
             _selected_provider, provider_anime_id = provider_for_id(aid)
             log.debug("received selected episode number=%s canonical_id=%s provider=%s provider_anime_id=%s requested_episode_id=%s provider_episode_id=%s language=%s server=%s", number, canonical_id, provider_name, provider_anime_id, requested_episode_id, exact_id, lang, server_name)
-        sources = provider_call("sources", provider_name, exact_id, lang)
+        cache_key = f"sources:{provider_name}:{exact_id}:{lang}"
+        sources = cache.get(cache_key)
+        if sources is None:
+            sources = provider_call("sources", provider_name, exact_id, lang)
+            if sources:
+                cache.put(cache_key, sources, 900)
         if DEBUG_SOURCES:
             for source in sources:
                 log.debug("source response provider=%s episode_id=%s server=%s language=%s quality=%s stream_url=%s", provider_name, exact_id, server_name, lang, source.get("quality"), source.get("url") or source.get("resourceLink"))
         return {"ok": True, "items": issue_source_tokens(sources)}
     if cmd == "homepage":
-        recent = cache.recent_items()
-        if recent:
+        if req.get("kind") == "recent":
+            recent = cache.recent_items()
             attach_covers(recent)
             return {"ok": True, "items": recent, "kind": "recent"}
-        trending = call_cached("discover:trending", 3600, "trending")
+        pref = getattr(cache, "get_setting", lambda *a, **kw: "all")("preferred_provider", "all")
+        trending = call_cached(f"discover:trending:{pref}", 3600, "trending")
         attach_covers(trending)
         return {"ok": True, "items": trending, "kind": "discover"}
     if cmd in ("trending", "discover"):
-        items = call_cached("discover:trending", 3600, "trending")
+        pref = getattr(cache, "get_setting", lambda *a, **kw: "all")("preferred_provider", "all")
+        items = call_cached(f"discover:trending:{pref}", 3600, "trending")
         attach_covers(items)
         return {"ok": True, "items": items, "kind": "discover"}
     if cmd == "search_genre":
+        pref = getattr(cache, "get_setting", lambda *a, **kw: "all")("preferred_provider", "all")
         genre_name = str(req.get("genre") or req.get("q") or "").strip()
         if not genre_name or genre_name.lower() == "all":
-            items = call_cached("discover:trending", 3600, "trending")
+            items = call_cached(f"discover:trending:{pref}", 3600, "trending")
         else:
-            items = call_cached("genre:" + genre_name.casefold(), 3600, "genre", genre_name)
+            items = call_cached(f"genre:{pref}:{genre_name.casefold()}", 3600, "genre", genre_name)
         attach_covers(items)
         return {"ok": True, "items": items, "kind": "genre"}
-    if cmd == "favorites": return {"ok": True, "items": cache.favorites()}
-    if cmd == "history": return {"ok": True, "items": cache.history()}
+    if cmd == "favorites":
+        items = cache.favorites()
+        for f in items:
+            meta = f.get("metadata") or {}
+            f["cover"] = meta.get("cover") or meta.get("coverUrl") or ""
+        attach_covers(items)
+        return {"ok": True, "items": items}
+    if cmd == "history":
+        items = cache.history()
+        attach_covers(items)
+        return {"ok": True, "items": items}
     if cmd == "clear_history": cache.clear_history(); return {"ok": True}
     if cmd == "remove_history": cache.remove_history(str(req.get("id", "")), str(req.get("episode_id", ""))); return {"ok": True}
     if cmd == "settings": return {"ok": True, "value": cache.settings()}
@@ -637,7 +726,7 @@ def handle_compat(req):
         return {"ok": True, "backend": "running", "download": downloads.status(),
                 "providers": [p.name for p in providers], "version": VERSION,
                 "cache_bytes": cache.cache_size(),
-                "log_path": str(Path(os.environ.get("XDG_STATE_HOME", Path.home() / ".local" / "state")) / "animechy" / "backend.log")}
+                "log_path": str(Path(os.environ.get("XDG_STATE_HOME", Path.home() / ".local" / "state")) / "hakucho" / "backend.log")}
     if cmd == "clear_cache": cache.clear_cache(); return {"ok": True, "cache_bytes": 0}
     if cmd == "clear_download_history": downloads.clear_history(); return {"ok": True}
     if cmd == "download_control":
@@ -710,10 +799,15 @@ def handle_compat(req):
         elif key == "download_location":
             try: value = downloads.set_download_dir(value)
             except (TypeError, ValueError, OSError) as e: raise ProviderError(str(e), "invalid_input") from e
-        cache.set_setting(key, value); return {"ok": True, "value": value}
+        cache.set_setting(key, value)
+        if key == "preferred_provider" and hasattr(cache, "clear_cache"):
+            cache.clear_cache()
+        return {"ok": True, "value": value}
     if cmd == "reset_settings":
         cache.clear_settings()
-        downloads.set_download_dir(str(Path.home() / "Videos" / "Animechy"))
+        if hasattr(cache, "clear_cache"):
+            cache.clear_cache()
+        downloads.set_download_dir(str(Path.home() / "Videos" / "Hakuchō"))
         downloads.set_limit(2)
         return {"ok": True, "value": {"preferred_provider": "all", "resume_playback": True, "default_language": "sub",
                                         "auto_fallback": False, "default_quality": "Auto",
@@ -782,6 +876,7 @@ class Handler(BaseHTTPRequestHandler):
                 referer = str((source or {}).get("referer", ""))
                 subtitle = str((source or {}).get("subtitle", ""))
 
+                # If source token is missing or expired, auto-resolve fresh source from provider using metadata
                 if not source or source.get("expires", 0) < time.time() or not _safe_url(url):
                     aid = str(metadata.get("id", ""))
                     ep_id = str(metadata.get("episode_id") or metadata.get("episode", ""))
@@ -832,7 +927,10 @@ class Handler(BaseHTTPRequestHandler):
                 if DEBUG_SOURCES:
                     log.debug("starting mpv provider=%s anime_id=%s episode=%s episode_id=%s argv=%r", metadata.get("provider"), metadata.get("id"), metadata.get("episode"), metadata.get("episode_id"), args)
                 if metadata.get("id") and metadata.get("episode_id"):
-                    cache.touch(str(metadata["id"]),str(metadata.get("title", ""))[:300],str(metadata.get("episode", "")),str(metadata["episode_id"]),str(metadata.get("provider", "")),metadata.get("canonical_id"),resume,0,cover=str(metadata.get("cover") or metadata.get("coverUrl") or ""))
+                    cov = resolve_cover_for_item({"id": metadata.get("id"), "cover": metadata.get("cover") or metadata.get("coverUrl") or ""})
+                    cache.touch(str(metadata["id"]), str(metadata.get("title", ""))[:300], str(metadata.get("episode", "")),
+                                str(metadata["episode_id"]), str(metadata.get("provider", "")), metadata.get("canonical_id"),
+                                resume, 0, cover=cov)
                 try:
                     process=subprocess.Popen(args, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
                     if metadata.get("id"):
@@ -852,9 +950,30 @@ class Handler(BaseHTTPRequestHandler):
     def log_message(self, fmt, *args): log.info("%s - %s", self.address_string(), fmt % args)
 
 
+def _backfill_covers():
+    try:
+        with cache._lock:
+            missing_recent = cache.db.execute("SELECT DISTINCT anime_id, title FROM recent WHERE cover IS NULL OR cover = '' OR cover LIKE '{%'").fetchall()
+            missing_hist = cache.db.execute("SELECT DISTINCT anime_id, title FROM watch_history WHERE cover IS NULL OR cover = '' OR cover LIKE '{%'").fetchall()
+        all_missing = set(missing_recent + missing_hist)
+        for aid, title in all_missing:
+            try:
+                cov = resolve_cover_for_item({"id": aid, "title": title})
+                if cov:
+                    cache.update_cover(aid, cov)
+                    h = hashlib.md5(cov.encode("utf-8")).hexdigest()
+                    dest = COVER_CACHE_DIR / f"{h}.jpg"
+                    _download_cover(cov, dest)
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+
 def main():
-    host = os.environ.get("ANIMECHY_HOST", "127.0.0.1")
-    port = int(os.environ.get("ANIMECHY_PORT", "8765"))
+    threading.Thread(target=_backfill_covers, daemon=True, name="hakucho-backfill-covers").start()
+    host = os.environ.get("HAKUCHO_HOST") or os.environ.get("ANIMECHY_HOST", "127.0.0.1")
+    port = int(os.environ.get("HAKUCHO_PORT") or os.environ.get("ANIMECHY_PORT", "8765"))
     server = ThreadingHTTPServer((host, port), Handler)
     log.info("backend listening at http://%s:%d; cache=%s", host, port, DATA)
     try: server.serve_forever()

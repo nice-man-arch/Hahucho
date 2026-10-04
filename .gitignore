@@ -1,7 +1,22 @@
+# runtime
+.runtime/
+.runtime/version
+.runtime/.pending-open
+
+# cache
+.cache/
+
+# python
 __pycache__/
-*.py[cod]
-*$py.class
-*.sqlite3
-*.sock
+*.pyc
+*.pyo
+.venv/
+pip-log.txt
+
+# editor
+.vscode/
+.idea/
+*~
+
+# logs
 *.log
-covers/

@@ -1,1 +1,1 @@
-"""Animechy local streaming backend."""
+"""Hakuchō local streaming backend."""

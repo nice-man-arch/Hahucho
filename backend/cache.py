@@ -5,11 +5,35 @@ import time
 from pathlib import Path
 
 
+def _clean_cover(val):
+    if not val:
+        return ""
+    if isinstance(val, dict):
+        return str(val.get("url") or val.get("extraLarge") or val.get("large") or val.get("medium") or "")
+    val = str(val).strip()
+    if val.startswith("{") and ("'url':" in val or '"url":' in val):
+        try:
+            val_json = json.loads(val.replace("'", '"'))
+            if isinstance(val_json, dict):
+                return str(val_json.get("url") or "")
+        except Exception:
+            pass
+    if val.startswith("http://") or val.startswith("https://") or val.startswith("file://"):
+        return val
+    return ""
+
+
 class Cache:
     def __init__(self, path: Path):
         path.parent.mkdir(parents=True, exist_ok=True)
         self.db = sqlite3.connect(path, check_same_thread=False)
         self._lock = threading.RLock()
+        self._mem = {}
+        try:
+            self.db.execute("PRAGMA journal_mode=WAL")
+            self.db.execute("PRAGMA synchronous=NORMAL")
+        except Exception:
+            pass
         self.db.execute("CREATE TABLE IF NOT EXISTS cache (key TEXT PRIMARY KEY, value TEXT NOT NULL, expires REAL NOT NULL)")
         self.db.execute("CREATE TABLE IF NOT EXISTS recent (anime_id TEXT PRIMARY KEY, title TEXT NOT NULL, episode TEXT NOT NULL, watched REAL NOT NULL, cover TEXT DEFAULT '')")
         self.db.execute("CREATE TABLE IF NOT EXISTS watch_history (anime_id TEXT NOT NULL, canonical_id TEXT, title TEXT NOT NULL, episode_id TEXT NOT NULL, episode TEXT NOT NULL, provider TEXT NOT NULL DEFAULT '', position REAL NOT NULL DEFAULT 0, duration REAL NOT NULL DEFAULT 0, is_watched INTEGER NOT NULL DEFAULT 0, watched REAL NOT NULL, cover TEXT DEFAULT '', PRIMARY KEY(anime_id, episode_id))")
@@ -33,22 +57,45 @@ class Cache:
         self.db.commit()
 
     def get(self, key):
+        now = time.time()
+        mem_item = self._mem.get(key)
+        if mem_item:
+            val, exp = mem_item
+            if exp >= now:
+                return val
+            self._mem.pop(key, None)
         row = self.db.execute("SELECT value, expires FROM cache WHERE key=?", (key,)).fetchone()
         if not row:
             return None
-        if row[1] < time.time():
+        if row[1] < now:
             self.db.execute("DELETE FROM cache WHERE key=?", (key,)); self.db.commit()
             return None
-        try: return json.loads(row[0])
-        except ValueError: return None
+        try:
+            val = json.loads(row[0])
+            self._mem[key] = (val, row[1])
+            return val
+        except ValueError:
+            return None
 
     def put(self, key, value, ttl):
-        self.db.execute("INSERT OR REPLACE INTO cache VALUES (?,?,?)", (key, json.dumps(value), time.time() + ttl)); self.db.commit()
+        exp = time.time() + ttl
+        self._mem[key] = (value, exp)
+        self.db.execute("INSERT OR REPLACE INTO cache VALUES (?,?,?)", (key, json.dumps(value), exp))
+        self.db.commit()
 
     def touch(self, anime_id, title, episode, episode_id=None, provider="", canonical_id=None, position=0, duration=0, is_watched=False, cover=""):
         with self._lock:
+            cov = _clean_cover(cover)
+            if not cov:
+                existing = self.db.execute("SELECT cover FROM recent WHERE anime_id=? AND cover != '' LIMIT 1", (str(anime_id),)).fetchone()
+                if existing and existing[0]:
+                    cov = _clean_cover(existing[0])
+                else:
+                    existing = self.db.execute("SELECT cover FROM watch_history WHERE anime_id=? AND cover != '' LIMIT 1", (str(anime_id),)).fetchone()
+                    if existing and existing[0]:
+                        cov = _clean_cover(existing[0])
             self.db.execute("INSERT OR REPLACE INTO recent(anime_id,title,episode,watched,cover) VALUES (?,?,?,?,?)",
-                            (str(anime_id), str(title), str(episode), time.time(), str(cover or '')))
+                            (str(anime_id), str(title), str(episode), time.time(), cov))
             episode_id = str(episode_id or episode)
             self.db.execute(
                 """INSERT INTO watch_history(anime_id,canonical_id,title,episode_id,episode,provider,position,duration,is_watched,watched,cover)
@@ -64,12 +111,13 @@ class Cache:
                        watched=excluded.watched,
                        cover=CASE WHEN excluded.cover != '' THEN excluded.cover ELSE watch_history.cover END""",
                 (str(anime_id), canonical_id, str(title), episode_id, str(episode), str(provider),
-                 max(0.0, float(position or 0)), max(0.0, float(duration or 0)), int(bool(is_watched)), time.time(), str(cover or ''))
+                 max(0.0, float(position or 0)), max(0.0, float(duration or 0)), int(bool(is_watched)), time.time(), cov)
             )
             self.db.commit()
 
     def update_progress(self, anime_id, episode_id, position, duration, is_watched=None, title=None, episode=None, cover=""):
         with self._lock:
+            cov = _clean_cover(cover)
             pos = max(0.0, float(position or 0))
             dur = max(0.0, float(duration or 0))
             done = bool(is_watched) if is_watched is not None else bool(dur > 0 and pos >= dur * 0.90)
@@ -81,21 +129,33 @@ class Cache:
 
             if done:
                 cur = self.db.execute(
-                    "UPDATE watch_history SET position=0.0,duration=CASE WHEN ?>0 THEN ? ELSE duration END,is_watched=1,watched=? WHERE anime_id=? AND (episode_id=? OR episode=? OR episode=?)",
-                    (dur, dur, time.time(), str(anime_id), eid, ep_num, eid)
+                    "UPDATE watch_history SET position=0.0,duration=CASE WHEN ?>0 THEN ? ELSE duration END,is_watched=1,watched=?,cover=CASE WHEN ? != '' THEN ? ELSE cover END WHERE anime_id=? AND (episode_id=? OR episode=? OR episode=?)",
+                    (dur, dur, time.time(), cov, cov, str(anime_id), eid, ep_num, eid)
                 )
             else:
                 cur = self.db.execute(
-                    "UPDATE watch_history SET position=?,duration=CASE WHEN ?>0 THEN ? ELSE duration END,is_watched=0,watched=? WHERE anime_id=? AND (episode_id=? OR episode=?)",
-                    (pos, dur, dur, time.time(), str(anime_id), eid, ep_num)
+                    "UPDATE watch_history SET position=?,duration=CASE WHEN ?>0 THEN ? ELSE duration END,is_watched=0,watched=?,cover=CASE WHEN ? != '' THEN ? ELSE cover END WHERE anime_id=? AND (episode_id=? OR episode=?)",
+                    (pos, dur, dur, time.time(), cov, cov, str(anime_id), eid, ep_num)
                 )
 
             if cur.rowcount == 0 and (title or episode):
                 self.db.execute(
                     "INSERT OR REPLACE INTO watch_history(anime_id,canonical_id,title,episode_id,episode,provider,position,duration,is_watched,watched,cover) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
-                    (str(anime_id), None, str(title or ""), eid, ep_num, "", pos, dur, int(done), time.time(), str(cover or ""))
+                    (str(anime_id), None, str(title or ""), eid, ep_num, "", pos, dur, int(done), time.time(), cov)
                 )
-            self.db.execute("UPDATE recent SET watched=?", (time.time(),))
+            if cov:
+                self.db.execute("UPDATE recent SET watched=?, cover=? WHERE anime_id=?", (time.time(), cov, str(anime_id)))
+            else:
+                self.db.execute("UPDATE recent SET watched=? WHERE anime_id=?", (time.time(), str(anime_id)))
+            self.db.commit()
+
+    def update_cover(self, anime_id, cover):
+        cov = _clean_cover(cover)
+        if not cov:
+            return
+        with self._lock:
+            self.db.execute("UPDATE recent SET cover=? WHERE anime_id=?", (cov, str(anime_id)))
+            self.db.execute("UPDATE watch_history SET cover=? WHERE anime_id=?", (cov, str(anime_id)))
             self.db.commit()
 
     def recent_items(self):
@@ -105,14 +165,14 @@ class Cache:
             for a,t,e,w,c in rows:
                 progress=self.db.execute("SELECT position,duration,provider,episode_id,canonical_id,is_watched,cover FROM watch_history WHERE anime_id=? AND (episode=? OR episode_id=?) ORDER BY watched DESC LIMIT 1",(a,e,e)).fetchone()
                 p,d,provider,eid,cid,done,cov=progress or (0,0,"",e,None,0,"")
-                cover = c or cov or ""
+                cover = _clean_cover(c or cov or "")
                 out.append(dict(id=a,title=t,episode=e,watched=w,position=(0.0 if done else p),duration=d,provider=provider,episode_id=eid,canonical_id=cid,is_watched=bool(done),cover=cover))
             return out
 
     def history(self):
         with self._lock:
-            return [dict(id=a,canonical_id=c,title=t,episode_id=eid,episode=e,provider=p,position=(0.0 if done else pos),duration=dur,is_watched=bool(done),watched=w)
-                    for a,c,t,eid,e,p,pos,dur,done,w in self.db.execute("SELECT anime_id,canonical_id,title,episode_id,episode,provider,position,duration,is_watched,watched FROM watch_history ORDER BY watched DESC LIMIT 100")]
+            return [dict(id=a,canonical_id=c,title=t,episode_id=eid,episode=e,provider=p,position=(0.0 if done else pos),duration=dur,is_watched=bool(done),watched=w,cover=_clean_cover(cov))
+                    for a,c,t,eid,e,p,pos,dur,done,w,cov in self.db.execute("SELECT anime_id,canonical_id,title,episode_id,episode,provider,position,duration,is_watched,watched,cover FROM watch_history ORDER BY watched DESC LIMIT 100")]
 
     def episode_status(self, anime_id, canonical_id=None):
         with self._lock:
@@ -211,6 +271,7 @@ class Cache:
 
     def clear_cache(self):
         with self._lock:
+            self._mem.clear()
             self.db.execute("DELETE FROM cache")
             self.db.commit()
 

@@ -33,6 +33,7 @@ Panel {
     property bool currentFavorite: false
     property real resumePosition: 0
     property int selStream: -1
+    property int streamsGen: 0
     property bool busy: false
     property string busyLabel: ""
     property string statusText: "Search anime — try \"One Piece\" or pick a genre"
@@ -77,7 +78,99 @@ Panel {
     property string selectedGenre: ""
     property bool genresExpanded: false
     property int genreGen: 0
-    Component.onCompleted: { loadHistory(); loadSettings(); loadAdminStatus(); }
+    readonly property string setupScript: Qt.resolvedUrl("animechy-setup.sh").toString().replace(/^file:\/\//, "")
+    property bool backendStarting: false
+
+    function ensureBackendRunning() {
+        if (root.hostWidget && typeof root.hostWidget.ensureBackend === "function") {
+            root.hostWidget.ensureBackend();
+        }
+        if (!backendAutoStartProc.running) {
+            root.backendStarting = true;
+            backendAutoStartProc.command = ["bash", root.setupScript];
+            backendAutoStartProc.running = true;
+        }
+    }
+
+    Process {
+        id: backendAutoStartProc
+        stdout: SplitParser {
+            onRead: function(data) { console.log("[hakucho backend]", data); }
+        }
+        stderr: SplitParser {
+            onRead: function(data) { console.warn("[hakucho backend err]", data); }
+        }
+        onExited: function(code) {
+            root.backendStarting = false;
+            if (code === 0) {
+                root.backendStatus.backend = "running";
+                root.loadAdminStatus();
+                root.loadSettings();
+                if (root.view === "home" && homeModel.count === 0) {
+                    root.loadHome(true);
+                } else if (root.view === "details" && root.currentId && (!root.episodes || root.episodes.length === 0)) {
+                    root.loadEpisodes(root.currentId);
+                }
+            }
+        }
+    }
+
+    Timer {
+        id: backendHealthCheckTimer
+        interval: 5000
+        repeat: true
+        running: root.opened || root.visible
+        onTriggered: {
+            var hXhr = new XMLHttpRequest();
+            hXhr.open("GET", (root.backendUrl || "http://127.0.0.1:8765/ipc").replace(/\/ipc$/, "/health"));
+            hXhr.timeout = 2000;
+            hXhr.onreadystatechange = function() {
+                if (hXhr.readyState === XMLHttpRequest.DONE) {
+                    if (hXhr.status === 200) {
+                        var wasOffline = (root.backendStatus && root.backendStatus.backend !== "running");
+                        root.backendStatus.backend = "running";
+                        if (wasOffline) {
+                            root.loadAdminStatus();
+                            root.loadSettings();
+                            if (root.view === "home" && homeModel.count === 0) {
+                                root.loadHome(true);
+                            } else if (root.view === "details" && root.currentId && (!root.episodes || root.episodes.length === 0)) {
+                                root.loadEpisodes(root.currentId);
+                            }
+                        }
+                    } else {
+                        root.backendStatus.backend = "stopped";
+                        root.ensureBackendRunning();
+                    }
+                }
+            };
+            hXhr.onerror = function() {
+                root.backendStatus.backend = "stopped";
+                root.ensureBackendRunning();
+            };
+            hXhr.send();
+        }
+    }
+
+    Timer {
+        id: backendRetryTimer
+        property var retryQueue: []
+        interval: 750
+        repeat: true
+        running: retryQueue.length > 0
+        onTriggered: {
+            if (retryQueue.length === 0) return;
+            var item = retryQueue.shift();
+            root.request(item.cmd, item.params, item.cb, item.attempt + 1);
+        }
+    }
+
+    Component.onCompleted: {
+        root.ensureBackendRunning();
+        loadHistory();
+        loadSettings();
+        loadAdminStatus();
+    }
     property var genreCache: ({
     })
     property var genreCacheTime: ({
@@ -85,6 +178,7 @@ Panel {
     readonly property var genres: ["All", "Action", "Adventure", "Comedy", "Drama", "Fantasy", "Romance", "Slice of Life", "Sci-Fi", "Mystery", "Sports", "Supernatural"]
     onOpenedChanged: {
         if (root.opened) {
+            root.ensureBackendRunning();
             root.loadHome(true);
             root.loadSettings();
             if (root.view === "details" && root.currentId) {
@@ -94,6 +188,7 @@ Panel {
     }
     onVisibleChanged: {
         if (visible) {
+            root.ensureBackendRunning();
             root.loadHome(true);
             root.loadSettings();
             if (root.view === "details" && root.currentId) {
@@ -152,31 +247,63 @@ Panel {
         });
     }
 
-    function request(cmd, params, cb) {
-        params = params || {
-        };
-        if (apiProc.running) {
-            root.pending.push({
-                "cmd": cmd,
-                "params": params,
-                "cb": cb
-            });
-            return ;
-        }
-        root._start(cmd, params, cb);
-    }
-
-    function _apiCmd(json) {
-        // User data is passed as one curl argument; no shell interpolation.
-        return ["curl", "-sS", "--max-time", "45", "-H", "Content-Type: application/json", "--data-binary", json, root.backendUrl];
-    }
-    function _start(cmd, params, cb) {
-        apiProc.collected = "";
-        root.cbChain = cb;
-        var req = JSON.parse(JSON.stringify(params));
+    function request(cmd, params, cb, retryCount) {
+        var attempt = retryCount || 0;
+        var xhr = new XMLHttpRequest();
+        var req = JSON.parse(JSON.stringify(params || {}));
         req.cmd = cmd;
-        apiProc.command = root._apiCmd(JSON.stringify(req));
-        apiProc.running = true;
+        xhr.open("POST", root.backendUrl || "http://127.0.0.1:8765/ipc");
+        xhr.setRequestHeader("Content-Type", "application/json");
+        xhr.timeout = 25000;
+
+        var handled = false;
+        function handleFailure(errText, code) {
+            if (handled) return;
+            handled = true;
+            if (attempt < 3) {
+                root.statusText = "Connecting to anime backend…";
+                root.ensureBackendRunning();
+                var q = backendRetryTimer.retryQueue.slice();
+                q.push({ cmd: cmd, params: params, cb: cb, attempt: attempt });
+                backendRetryTimer.retryQueue = q;
+            } else {
+                root.statusText = errText || "Backend offline";
+                if (cb) cb({ ok: false, error: errText || "Backend network error" }, code || 0);
+            }
+        }
+
+        xhr.onreadystatechange = function() {
+            if (xhr.readyState === XMLHttpRequest.DONE) {
+                if (handled) return;
+                var resp = null;
+                try {
+                    if (xhr.responseText) resp = JSON.parse(xhr.responseText);
+                } catch (e) {}
+                if (resp && typeof resp === "object") {
+                    handled = true;
+                    root.backendStarting = false;
+                    root.backendStatus.backend = "running";
+                    if (cb) cb(resp, xhr.status);
+                } else if (xhr.status === 200) {
+                    handled = true;
+                    root.backendStarting = false;
+                    root.backendStatus.backend = "running";
+                    if (cb) cb(resp, xhr.status);
+                } else if (xhr.status === 0) {
+                    handleFailure("Backend network error", xhr.status);
+                } else {
+                    handled = true;
+                    if (cb) cb(resp, xhr.status);
+                }
+            }
+        };
+        xhr.ontimeout = function() {
+            handleFailure("Request timed out", 408);
+        };
+        xhr.onerror = function() {
+            if (!handled) handleFailure("Backend network error", 0);
+        };
+        xhr.send(JSON.stringify(req));
     }
 
     // ---------------- helpers ----------------
@@ -186,7 +313,7 @@ Panel {
         if (u.startsWith("file://") || u.startsWith("/")) return true;
         if (u.startsWith("//")) u = "https:" + u;
         if (u.startsWith("http://127.0.0.1") || u.startsWith("http://localhost")) return true;
-        if (u.startsWith("https://")) return true;
+        if (u.startsWith("https://") || u.startsWith("http://")) return true;
         return false;
     }
     function _sanitizeCoverUrl(u) {
@@ -195,16 +322,18 @@ Panel {
         if (u.startsWith("file://")) return u;
         if (u.startsWith("/")) return "file://" + u;
         if (u.startsWith("//")) return "https:" + u;
-        if (u.startsWith("http://127.0.0.1") || u.startsWith("http://localhost") || u.startsWith("https://")) return u;
+        if (u.startsWith("http://127.0.0.1") || u.startsWith("http://localhost") || u.startsWith("https://") || u.startsWith("http://")) return u;
         return "";
     }
     function coverUrlOf(obj) {
         if (!obj) return "";
-        var raw = "";
-        var c = obj.cover;
-        if (c && typeof c === "object") raw = c.url || c.extraLarge || c.large || "";
-        else if (typeof c === "string") raw = c;
-        else raw = obj.coverPath || obj.coverUrl || "";
+        var raw = obj.coverPath || "";
+        if (!raw) {
+            var c = obj.cover;
+            if (c && typeof c === "object") raw = c.url || c.extraLarge || c.large || c.medium || "";
+            else if (typeof c === "string") raw = c;
+            else raw = obj.coverUrl || "";
+        }
         return _sanitizeCoverUrl(raw);
     }
 
@@ -216,7 +345,7 @@ Panel {
 
         suggestionModel.clear();
         searchField.focus = false;
-        root.addHistory(q);
+        addToHistory(q);
         root.query = q;
         root.selectedGenre = "";
         root.busy = true;
@@ -241,21 +370,22 @@ Panel {
             resultModel.clear();
             for (var i = 0; i < root.results.length; i++) {
                 var r = root.results[i];
+                var cov = r.coverPath || r.cover || "";
                 resultModel.append({
                     "id": root.sanitize(r.id),
                     "title": root.sanitize(r.title),
                     "year": root.sanitize(r.year || ""),
                     "rating": root.sanitize(r.rating ? String(r.rating) : "-"),
-                    "cover": root.sanitize(r.cover || ""),
-                    "coverPath": root.sanitize(r.cover || ""),
-                    "duration": root.sanitize(r.duration || "")
+                    "cover": root.sanitize(r.cover || cov),
+                    "coverPath": root.sanitize(cov),
+                    "duration": root.sanitize(r.duration || ""),
+                    "provider": root.sanitize(r.provider || (r.id && r.id.indexOf("hianime:") === 0 ? "hianime" : (r.id && r.id.indexOf("hiyori:") === 0 ? "hiyori" : "")))
                 });
             }
             root.view = "grid";
             suggestionModel.clear();
             searchField.focus = false;
             root.statusText = resultModel.count + " results for “" + q + "”";
-            addToHistory(q);
         });
     }
 
@@ -266,14 +396,14 @@ Panel {
     // ---------- search history (in-memory + file via Process) ----------
     function loadHistory() {
         // use $HOME so fresh installs with different usernames work; not watched by plugin watcher
-        historyLoadProc.command = ["bash", "-c", "cat \"$HOME/.local/state/animechy/hists\" 2>/dev/null || cat \"${XDG_STATE_HOME:-$HOME/.local/state}/animechy/hists\" 2>/dev/null || true"];
+        historyLoadProc.command = ["bash", "-c", "cat \"$HOME/.local/state/hakucho/hists\" 2>/dev/null || cat \"$HOME/.local/state/animechy/hists\" 2>/dev/null || cat \"${XDG_STATE_HOME:-$HOME/.local/state}/hakucho/hists\" 2>/dev/null || cat \"${XDG_STATE_HOME:-$HOME/.local/state}/animechy/hists\" 2>/dev/null || true"];
         historyLoadProc.running = true;
     }
 
     function saveHistory() {
         var payload = JSON.stringify(root.searchHistory);
         var b64 = Qt.btoa(payload);
-        historySaveProc.command = ["bash", "-c", "mkdir -p \"$HOME/.local/state/animechy\" && echo '" + b64 + "' | base64 -d > \"$HOME/.local/state/animechy/hists\""];
+        historySaveProc.command = ["bash", "-c", "mkdir -p \"$HOME/.local/state/hakucho\" && echo '" + b64 + "' | base64 -d > \"$HOME/.local/state/hakucho/hists\""];
         historySaveProc.running = true;
     }
 
@@ -304,7 +434,15 @@ Panel {
         root.currentTitle = root.sanitize(it.title);
         root.currentFavorite = false;
         root.resumePosition = 0;
-        root.details = null;
+        var initCover = it.coverPath || it.cover || "";
+        root.details = {
+            "id": root.currentId,
+            "title": root.currentTitle,
+            "coverUrl": initCover,
+            "cover": { "url": initCover },
+            "year": root.sanitize(it.year || ""),
+            "rating": root.sanitize(it.rating || "")
+        };
         root.seasons = [];
         root.episodes = [];
         root.streams = [];
@@ -316,10 +454,9 @@ Panel {
         root.detailGen++;
         var gen = root.detailGen;
         root.busy = true;
-        root.busyLabel = "Loading details & episodes …";
+        root.busyLabel = "Loading episodes …";
         root.statusText = "Loading “" + it.title + "” …";
         root.view = "details";
-        detailPoster.source = _sanitizeCoverUrl(it.cover || "");
         // fetch details and episodes in parallel — episodes start immediately
         root.loadEpisodes(it.id, gen);
         request("favorites", {}, function(fr) {
@@ -354,9 +491,6 @@ Panel {
             }
             root.seasons = normSeasons;
             root.curSeasonIdx = 0;
-            var cover = root.coverUrlOf(root.details);
-            if (cover)
-                detailPoster.source = cover;
             // if episodes not yet loaded, fetch them; otherwise keep already-loaded episodes
             // (speculative loadEpisodes already started in parallel)
             if (root.episodes.length === 0) {
@@ -462,10 +596,6 @@ Panel {
 
             if (resp && resp.ok) {
                 root.details = root.sanitizeDetails(resp.value);
-                var cover = root.coverUrlOf(root.details);
-                if (cover)
-                    detailPoster.source = cover;
-
             }
             // load episodes for this season id
             root.loadEpisodes(s.id, gen);
@@ -476,21 +606,19 @@ Panel {
         root.busy = true;
         root.busyLabel = "Loading streams …";
         var effMode = mode || root.mode;
+        root.curEp = String(ep);
         var selectedEpisode = root.currentEpisodeObject();
+        if (selectedEpisode && root.playbackSettings.resume_playback !== false && selectedEpisode.watch_status !== "watched" && Number(selectedEpisode.watch_position || 0) > 0) {
+            root.resumePosition = Number(selectedEpisode.watch_position);
+        } else {
+            root.resumePosition = 0;
+        }
         var exactEpisodeRef = episodeRef || (root.selectedServer ? root.selectedServer.episode_id : selectedEpisode ? selectedEpisode.id : "");
         var req = { cmd: "streams", id: aid, episode: String(ep), episode_id: exactEpisodeRef, mode: effMode, server: root.selectedServer || {} };
-        if (streamsProc.running) {
-            // Keep the active curl callback attached to its own request. The latest
-            // click replaces a queued request instead of relabeling an old response.
-            streamsProc.gen++;
-            streamsProc.pendingRequest = {aid:aid, ep:ep, mode:effMode, fallback:_fallbackTried, episodeRef:exactEpisodeRef};
-            return;
-        }
-        streamsProc.gen++;
-        var gen = streamsProc.gen;
-        streamsProc.collected = "";
-        streamsProc.cbChain = function(resp, code) {
-            if (gen !== streamsProc.gen) return;
+        root.streamsGen++;
+        var gen = root.streamsGen;
+        request("streams", req, function(resp, code) {
+            if (gen !== root.streamsGen) return;
             var items = (resp && resp.ok && resp.items) ? resp.items : [];
             if (items.length === 0 && resp && resp.ok && !_fallbackTried && !root.selectedServer) {
                 var other = (effMode === "sub") ? "dub" : "sub";
@@ -500,15 +628,20 @@ Panel {
             }
             root.busy = false;
             if (!resp || !resp.ok) {
-                if (root.playbackSettings.auto_fallback && root.selectedServer) {
+                if (root.selectedServer) {
                     var options=root.serversForMode(effMode), next=null;
                     if (root.fallbackTried.indexOf(root.selectedServer.episode_id)<0) root.fallbackTried=root.fallbackTried.concat([root.selectedServer.episode_id]);
                     for (var oi=0;oi<options.length;oi++) if (root.fallbackTried.indexOf(options[oi].episode_id)<0) { next=options[oi]; break; }
-                    if (next) { root.statusText=String(root.selectedServer.server).toUpperCase()+" failed; trying "+String(next.server).toUpperCase()+" automatically"; root.selectedServer=next; root.loadStreams(aid,ep,effMode,true,next.episode_id); return; }
+                    if (next) {
+                        root.statusText=String(root.selectedServer.server).toUpperCase()+" failed; trying "+String(next.server).toUpperCase()+"…";
+                        root.selectedServer=next;
+                        root.loadStreams(aid,ep,effMode,true,next.episode_id);
+                        return;
+                    }
                 }
                 root.streams = [];
                 root.selStream = -1;
-                root.statusText = (root.selectedServer ? String(root.selectedServer.server).toUpperCase()+" failed to provide a playable stream. " : "") + ((resp && resp.error) || "Backend request failed while finding a stream");
+                root.statusText = (root.selectedServer ? String(root.selectedServer.server).toUpperCase()+" failed: " : "") + ((resp && resp.error) || "Could not load streams");
                 return;
             }
             root.streams = root.sanitizeStreams(items);
@@ -524,9 +657,7 @@ Panel {
                 }
                 root.curEp = String(ep);
             }
-        };
-        streamsProc.command = root._apiCmd(JSON.stringify(req));
-        streamsProc.running = true;
+        });
     }
 
     function selectStream(i) {
@@ -544,28 +675,31 @@ Panel {
     }
 
     function selectEpisode(epObj) {
-        var preferredId=root.selectedServer ? root.selectedServer.episode_id : "";
-        root.curEp=String(epObj.number); root.selectedServer=null; root.fallbackTried=[];
+        var preferredId = root.selectedServer ? root.selectedServer.episode_id : "";
+        var prefProv = (root.playbackSettings && root.playbackSettings.preferred_provider) || "all";
+        root.curEp = String(epObj.number); root.selectedServer = null; root.fallbackTried = [];
         if (Array.isArray(epObj.servers)) {
-            var options=epObj.servers;
-            var exact=options.filter(function(s){return preferredId && s.episode_id===preferredId && s.language===root.mode;});
-            var preferred=options.filter(function(s){return s.language===root.mode;});
+            var options = epObj.servers;
+            var exact = options.filter(function(s){ return preferredId && s.episode_id === preferredId && s.language === root.mode; });
+            var preferred = options.filter(function(s){
+                return s.language === root.mode && (prefProv === "all" || s.provider === prefProv);
+            });
             if (!preferred.length) {
-                root.mode=options.length ? options[0].language : "sub";
-                preferred=options.filter(function(s){return s.language===root.mode;});
+                preferred = options.filter(function(s){ return s.language === root.mode; });
             }
-            root.selectedServer=exact.length ? exact[0] : preferred.length ? preferred[0] : null;
+            if (!preferred.length) {
+                root.mode = options.length ? options[0].language : "sub";
+                preferred = options.filter(function(s){
+                    return s.language === root.mode && (prefProv === "all" || s.provider === prefProv);
+                });
+                if (!preferred.length) {
+                    preferred = options.filter(function(s){ return s.language === root.mode; });
+                }
+            }
+            root.selectedServer = exact.length ? exact[0] : (preferred.length ? preferred[0] : null);
         }
-        if (root.playbackSettings.resume_playback !== false) {
-            if (epObj.watch_status === "watched") {
-                root.resumePosition = 0;
-            } else if (Number(epObj.watch_position || 0) > 0) {
-                root.resumePosition = Number(epObj.watch_position);
-            } else if (root.resumePosition > 0 && String(root.curEp) === String(epObj.number)) {
-                // keep existing resumePosition for this episode
-            } else {
-                root.resumePosition = 0;
-            }
+        if (root.playbackSettings.resume_playback !== false && epObj.watch_status !== "watched" && Number(epObj.watch_position || 0) > 0) {
+            root.resumePosition = Number(epObj.watch_position);
         } else {
             root.resumePosition = 0;
         }
@@ -605,12 +739,30 @@ Panel {
                 episode_id: selectedEpId,
                 provider: selectedProvider,
                 language: root.mode,
-                canonical_id: canonical
+                canonical_id: canonical,
+                cover: root.coverUrlOf(root.details)
             }
         };
-        mpvProc.collected = "";
-        mpvProc.command = ["curl", "-sS", "--max-time", "8", "-H", "Content-Type: application/json", "--data-binary", JSON.stringify(playRequest), "http://127.0.0.1:8765/play"];
-        mpvProc.running = true;
+        var xhr = new XMLHttpRequest();
+        xhr.open("POST", (root.backendUrl || "http://127.0.0.1:8765/ipc").replace(/\/ipc$/, "/play"));
+        xhr.setRequestHeader("Content-Type", "application/json");
+        xhr.onreadystatechange = function() {
+            if (xhr.readyState === XMLHttpRequest.DONE) {
+                var resp = null;
+                try { resp = JSON.parse(xhr.responseText); } catch(e) {}
+                if (resp && resp.ok) {
+                    root.playing = true;
+                    root.mpvActive = true;
+                    root.statusText = "Playing in mpv";
+                    Qt.callLater(function() { root.close(); });
+                } else {
+                    root.playing = false;
+                    root.mpvActive = false;
+                    root.statusText = (resp && resp.error) || "Playback request failed";
+                }
+            }
+        };
+        xhr.send(JSON.stringify(playRequest));
     }
 
     function downloadSelected() {
@@ -715,9 +867,19 @@ Panel {
 
     function setFavorite() {
         var canonical = root.details && root.details.mal_id ? "mal:" + root.details.mal_id : root.details && root.details.anilist_id ? "anilist:" + root.details.anilist_id : "";
-        favoriteProc.collected = "";
-        favoriteProc.command = ["curl", "-sS", "--max-time", "5", "-H", "Content-Type: application/json", "--data-binary", JSON.stringify({cmd:"favorite", id:root.currentId, title:root.currentTitle, canonical_id:canonical, metadata:{cover:root.coverUrlOf(root.details), provider:root.currentId.split(":")[0]||"", canonical_id:canonical}}), "http://127.0.0.1:8765/ipc"];
-        favoriteProc.running = true;
+        request("favorite", {
+            "id": root.currentId,
+            "title": root.currentTitle,
+            "canonical_id": canonical,
+            "metadata": {
+                "cover": root.coverUrlOf(root.details),
+                "provider": root.currentId.split(":")[0] || "",
+                "canonical_id": canonical
+            }
+        }, function(result) {
+            if (result && result.ok) root.currentFavorite = !!result.favorite;
+            else root.statusText = (result && result.error) || "Could not update favorite";
+        });
     }
 
     function showFavorites() {
@@ -727,7 +889,8 @@ Panel {
             if (!resp || !resp.ok) { root.statusText=(resp && resp.error)||"Could not load favorites"; return; }
             for (var i=0;i<resp.items.length;i++) {
                 var f=resp.items[i], m=f.metadata||{};
-                homeModel.append({id:f.id,title:f.title,cover:m.cover||m.coverUrl||"",coverPath:m.cover||m.coverUrl||"",year:"",rating:"-",episode:""});
+                var cov = f.coverPath || f.cover || m.coverPath || m.cover || m.coverUrl || "";
+                homeModel.append({id:f.id,title:f.title,cover:cov,coverPath:cov,year:"",rating:"-",episode:""});
             }
             root.statusText=homeModel.count+" favorites";
         });
@@ -740,7 +903,8 @@ Panel {
             if (!resp || !resp.ok) { root.statusText=(resp && resp.error)||"Could not load history"; return; }
             for (var i=0;i<resp.items.length;i++) {
                 var h=resp.items[i];
-                homeModel.append({id:h.id,title:h.title,cover:"",coverPath:"",year:"",rating:"-",episode:h.episode,
+                var cov = h.coverPath || h.cover || "";
+                homeModel.append({id:h.id,title:h.title,cover:cov,coverPath:cov,year:"",rating:"-",episode:h.episode,
                     position:Number(h.position||0),playDuration:Number(h.duration||0),episode_id:h.episode_id,provider:h.provider});
             }
             root.statusText=homeModel.count+" history entries";
@@ -755,6 +919,16 @@ Panel {
     function saveSetting(key, value) {
         var s=Object.assign({}, root.playbackSettings); s[key]=value; root.playbackSettings=s;
         if (key === "default_language") root.mode=value;
+        if (key === "preferred_provider") {
+            root.genreCache = {};
+            root.genreCacheTime = {};
+            root.results = [];
+            resultModel.clear();
+            root.statusText = "Provider set to " + (value === "all" ? "Auto (Both)" : value === "hianime" ? "HiAnime" : "Hiyori");
+            if (root.view === "home") {
+                root.loadHome(true);
+            }
+        }
         request("set_setting", {key:key,value:value}, function(r) {
             if (!r || !r.ok) { root.statusText=(r && r.error)||"Could not save setting"; root.loadSettings(); }
             else if (key === "download_location") root.downloadDestination=r.value;
@@ -762,16 +936,8 @@ Panel {
     }
 
     function prefetchDetails(id) {
-        if (!id || apiProc.running || root.pending.length > 0 || prefetchProc.running)
-            return ;
-
-        var req = JSON.stringify({
-            "cmd": "details",
-            "id": id
-        });
-        prefetchProc.collected = "";
-        prefetchProc.command = root._apiCmd(req);
-        prefetchProc.running = true;
+        if (!id) return ;
+        request("details", { "id": id }, function() {});
     }
 
     function loadHome(force) {
@@ -787,7 +953,7 @@ Panel {
         root.busyLabel = "Loading home …";
         request("homepage", {
             "page": 1,
-            "perPage": 24
+            "perPage": 50
         }, function(resp) {
             root.homeLoading = false;
             root.busy = false;
@@ -808,15 +974,16 @@ Panel {
                 }
             }
             homeModel.clear();
-            for (var k = 0; k < items.length && k < 24; k++) {
+            for (var k = 0; k < items.length; k++) {
                 var r = items[k];
+                var cov = r.coverPath || r.cover || "";
                 homeModel.append({
                     "id": root.sanitize(r.id),
                     "title": root.sanitize(r.title),
                     "year": root.sanitize(r.year || ""),
                     "rating": root.sanitize(r.rating ? String(r.rating) : "-"),
-                    "cover": root.sanitize(r.cover || ""),
-                    "coverPath": root.sanitize(r.cover || ""),
+                    "cover": root.sanitize(r.cover || cov),
+                    "coverPath": root.sanitize(cov),
                     "duration": root.sanitize(r.duration || ""),
                     "episode": root.sanitize(r.episode || ""),
                     "position": Number(r.position || 0), "playDuration": Number(r.duration || 0),
@@ -828,6 +995,58 @@ Panel {
         });
     }
 
+    function showDiscover() {
+        root.homeLoading = true; root.view = "home"; root.homeKind = "discover";
+        request("trending", {}, function(resp) {
+            root.homeLoading = false; homeModel.clear();
+            if (!resp || !resp.ok) { root.statusText = (resp && resp.error) || "Could not load discover"; return; }
+            var items = resp.items || [];
+            for (var k = 0; k < items.length; k++) {
+                var r = items[k];
+                var cov = r.coverPath || r.cover || "";
+                homeModel.append({
+                    "id": root.sanitize(r.id),
+                    "title": root.sanitize(r.title),
+                    "year": root.sanitize(r.year || ""),
+                    "rating": root.sanitize(r.rating ? String(r.rating) : "-"),
+                    "cover": root.sanitize(r.cover || cov),
+                    "coverPath": root.sanitize(cov),
+                    "duration": root.sanitize(r.duration || ""),
+                    "episode": root.sanitize(r.episode || ""),
+                    "position": 0, "playDuration": 0,
+                    "episode_id": "", "provider": r.provider || ""
+                });
+            }
+            root.statusText = homeModel.count + " discover titles";
+        });
+    }
+
+    function showContinueWatching() {
+        root.homeLoading = true; root.view = "home"; root.homeKind = "recent";
+        request("recent", {}, function(resp) {
+            root.homeLoading = false; homeModel.clear();
+            if (!resp || !resp.ok) { root.statusText = (resp && resp.error) || "Could not load continue watching"; return; }
+            var items = resp.items || [];
+            for (var k = 0; k < items.length; k++) {
+                var r = items[k];
+                var cov = r.coverPath || r.cover || "";
+                homeModel.append({
+                    "id": root.sanitize(r.id),
+                    "title": root.sanitize(r.title),
+                    "year": root.sanitize(r.year || ""),
+                    "rating": root.sanitize(r.rating ? String(r.rating) : "-"),
+                    "cover": root.sanitize(r.cover || cov),
+                    "coverPath": root.sanitize(cov),
+                    "duration": root.sanitize(r.duration || ""),
+                    "episode": root.sanitize(r.episode || ""),
+                    "position": Number(r.position || 0), "playDuration": Number(r.duration || 0),
+                    "episode_id": r.episode_id || "", "provider": r.provider || ""
+                });
+            }
+            root.statusText = homeModel.count + " titles in progress";
+        });
+    }
+
     function goHome() {
         root.selectedGenre = "";
         root.loadHome(true);
@@ -836,14 +1055,14 @@ Panel {
     function refreshHomeSilently() {
         if (root.homeLoading || root.busy || root.selectedGenre !== "")
             return ;
-        request("homepage", { "page": 1, "perPage": 24 }, function(resp) {
+        request("homepage", { "page": 1, "perPage": 50 }, function(resp) {
             if (!resp || !resp.ok || root.homeLoading) return ;
             var items = resp.items || [];
             if (resp.kind === "recent") {
                 root.homeKind = "recent";
                 if (homeModel.count !== items.length) {
                     homeModel.clear();
-                    for (var k = 0; k < items.length && k < 24; k++) {
+                    for (var k = 0; k < items.length; k++) {
                         var r = items[k];
                         homeModel.append({
                             "id": root.sanitize(r.id),
@@ -896,55 +1115,50 @@ Panel {
             root.episodes = eps;
             root._episodeCount = eps.length;
             var curEpObj = root.currentEpisodeObject();
-            if (curEpObj && root.playbackSettings.resume_playback !== false) {
-                if (curEpObj.watch_status === "watched") {
-                    root.resumePosition = 0;
-                } else if (Number(curEpObj.watch_position || 0) > 0) {
-                    root.resumePosition = Number(curEpObj.watch_position);
-                }
+            if (curEpObj && root.playbackSettings.resume_playback !== false && curEpObj.watch_status !== "watched" && Number(curEpObj.watch_position || 0) > 0) {
+                root.resumePosition = Number(curEpObj.watch_position);
+            } else {
+                root.resumePosition = 0;
             }
         });
     }
 
     function searchByGenre(genre, force) {
-        if (genre === "All" || genre === "") {
-            root.selectedGenre = "";
-            root.loadHome(true);
-            return ;
-        }
-        root.selectedGenre = genre;
+        var g = (genre === "All" || !genre) ? "All" : genre;
+        root.selectedGenre = g;
         var now = Date.now();
-        var cached = root.genreCache[genre];
-        var cachedAt = root.genreCacheTime[genre] || 0;
+        var cached = root.genreCache[g];
+        var cachedAt = root.genreCacheTime[g] || 0;
         var fresh = cached && (now - cachedAt < 600000) && !force;
         if (fresh) {
             root.results = cached;
             resultModel.clear();
             for (var ci = 0; ci < cached.length; ci++) {
                 var cr = cached[ci];
+                var cov = cr.coverPath || cr.cover || "";
                 resultModel.append({
                     "id": root.sanitize(cr.id),
                     "title": root.sanitize(cr.title),
                     "year": root.sanitize(cr.year || ""),
                     "rating": root.sanitize(cr.rating ? String(cr.rating) : "-"),
-                    "cover": root.sanitize(cr.cover || ""),
-                    "coverPath": root.sanitize(cr.cover || ""),
+                    "cover": root.sanitize(cr.cover || cov),
+                    "coverPath": root.sanitize(cov),
                     "duration": root.sanitize(cr.duration || "")
                 });
             }
             root.view = "grid";
-            root.statusText = resultModel.count + " " + genre + " titles";
+            root.statusText = resultModel.count + " " + (g === "All" ? "Trending" : g) + " titles";
             root.busy = false;
             return ;
         }
         root.busy = true;
-        root.busyLabel = "Loading " + genre + " …";
+        root.busyLabel = "Loading " + (g === "All" ? "All titles" : g) + " …";
         root.statusText = "";
         root.genreGen++;
         var gen = root.genreGen;
         request("search_genre", {
-            "genre": genre,
-            "q": genre,
+            "genre": g,
+            "q": g,
             "page": 1
         }, function(resp, code) {
             if (gen !== root.genreGen)
@@ -956,31 +1170,31 @@ Panel {
                 return ;
             }
             root.results = resp.items || [];
-            var nc = {
-            };
-            for (var k in root.genreCache) nc[k] = root.genreCache[k]
-            nc[genre] = root.results.slice();
+            var nc = {};
+            for (var k in root.genreCache) nc[k] = root.genreCache[k];
+            nc[g] = root.results.slice();
             root.genreCache = nc;
-            var nt = {
-            };
-            for (var k2 in root.genreCacheTime) nt[k2] = root.genreCacheTime[k2]
-            nt[genre] = Date.now();
+            var nt = {};
+            for (var k2 in root.genreCacheTime) nt[k2] = root.genreCacheTime[k2];
+            nt[g] = Date.now();
             root.genreCacheTime = nt;
             resultModel.clear();
             for (var i = 0; i < root.results.length; i++) {
                 var r = root.results[i];
+                var cov2 = r.coverPath || r.cover || "";
                 resultModel.append({
                     "id": root.sanitize(r.id),
                     "title": root.sanitize(r.title),
                     "year": root.sanitize(r.year || ""),
                     "rating": root.sanitize(r.rating ? String(r.rating) : "-"),
-                    "cover": root.sanitize(r.cover || ""),
-                    "coverPath": root.sanitize(r.cover || ""),
-                    "duration": root.sanitize(r.duration || "")
+                    "cover": root.sanitize(r.cover || cov2),
+                    "coverPath": root.sanitize(cov2),
+                    "duration": root.sanitize(r.duration || ""),
+                    "provider": root.sanitize(r.provider || (r.id && r.id.indexOf("hianime:") === 0 ? "hianime" : (r.id && r.id.indexOf("hiyori:") === 0 ? "hiyori" : "")))
                 });
             }
             root.view = "grid";
-            root.statusText = resultModel.count + " " + genre + " titles";
+            root.statusText = resultModel.count + " " + (g === "All" ? "Trending" : g) + " titles";
         });
     }
 
@@ -1005,10 +1219,6 @@ Panel {
 
                 if (resp && resp.ok) {
                     root.details = root.sanitizeDetails(resp.value);
-                    var cover = root.coverUrlOf(root.details);
-                    if (cover)
-                        detailPoster.source = cover;
-
                 }
                 root.loadEpisodes(root.currentId, gen);
             });
@@ -1060,97 +1270,6 @@ Panel {
     implicitHeight: 580
 
     Process {
-        id: apiProc
-
-        property string collected: ""
-
-        onExited: function(code, status) {
-            var cb = root.cbChain;
-            root.cbChain = null;
-            var resp = null;
-            try {
-                resp = JSON.parse(apiProc.collected);
-            } catch (e) {
-            }
-            if (cb)
-                cb(resp, code);
-
-            if (root.pending.length > 0) {
-                var next = root.pending.shift();
-                root._start(next.cmd, next.params, next.cb);
-            }
-        }
-
-        stdout: SplitParser {
-            onRead: function(data) {
-                apiProc.collected += data;
-            }
-        }
-
-    }
-
-    Process {
-        id: mpvProc
-        property string collected: ""
-        stdout: SplitParser { onRead: function(data) { mpvProc.collected += data } }
-        onExited: function(code) {
-            var resp = null;
-            try { resp = JSON.parse(mpvProc.collected); } catch (e) {}
-            mpvProc.collected = "";
-            if (resp && resp.ok) {
-                root.playing = true;
-                root.mpvActive = true;
-                root.statusText = "Playing in mpv";
-                Qt.callLater(function() { root.close(); });
-            } else {
-                root.playing = false;
-                root.mpvActive = false;
-                root.statusText = (resp && resp.error) || (code !== 0 ? "Backend could not start mpv" : "Playback request failed");
-            }
-        }
-    }
-
-    Process {
-        id: prefetchProc
-
-        property string collected: ""
-
-        onExited: function(code) {
-            try {
-                JSON.parse(prefetchProc.collected);
-            } catch (e) {
-            }
-        }
-
-        stdout: SplitParser {
-            onRead: function(data) {
-                prefetchProc.collected += data;
-            }
-        }
-
-    }
-
-    Process {
-        id: streamsProc
-        property string collected: ""
-        property var cbChain: null
-        property var pendingRequest: null
-        property int gen: 0
-        onExited: function(code, status) {
-            var cb = streamsProc.cbChain;
-            streamsProc.cbChain = null;
-            var resp = null;
-            try { resp = JSON.parse(streamsProc.collected); } catch(e){}
-            streamsProc.collected = "";
-            if (cb) cb(resp, code);
-            var pending=streamsProc.pendingRequest;
-            streamsProc.pendingRequest=null;
-            if (pending) root.loadStreams(pending.aid,pending.ep,pending.mode,pending.fallback,pending.episodeRef);
-        }
-        stdout: SplitParser { onRead: function(data){ streamsProc.collected += data } }
-    }
-
-    Process {
         id: historyLoadProc
         property string collected: ""
         onExited: function(code) {
@@ -1168,18 +1287,7 @@ Panel {
         stdout: SplitParser { onRead: function(data){ historyLoadProc.collected += data } }
     }
     Process { id: historySaveProc }
-    Process { id: watchedProc }
-    Process {
-        id: favoriteProc
-        property string collected: ""
-        stdout: SplitParser { onRead: function(data) { favoriteProc.collected += data } }
-        onExited: function(code) {
-            var result=null; try { result=JSON.parse(favoriteProc.collected); } catch(e) {}
-            favoriteProc.collected="";
-            if (result && result.ok) root.currentFavorite=!!result.favorite;
-            else root.statusText=(result && result.error)||"Could not update favorite";
-        }
-    }
+    Process { id: openPathProc }
 
     Timer {
         interval: 1000
@@ -1214,8 +1322,6 @@ Panel {
             if (root.backendStatus.backend !== "running") { root.loadSettings(); root.loadAdminStatus(); }
         }
     }
-
-    Process { id: openPathProc }
 
     // ---------------- UI ----------------
     ListModel {
@@ -1302,7 +1408,7 @@ Panel {
                         }
 
                         Text {
-                            text: "Animechy"
+                            text: "Hakuchō"
                             font.family: Style.font.family
                             font.pixelSize: Style.font.title
                             font.bold: true
@@ -1319,7 +1425,13 @@ Panel {
                         }
 
                         Text {
-                            text: root.view === "details" ? "Details" : root.view === "grid" ? "Results" : root.view === "downloads" ? "Downloads" : root.view === "settings" ? "Settings" : "Discover"
+                            text: root.view === "details" ? "Details" :
+                                  root.view === "grid" ? (root.selectedGenre ? root.selectedGenre : "Results") :
+                                  root.view === "downloads" ? "Downloads" :
+                                  root.view === "settings" ? "Settings" :
+                                  (root.homeKind === "favorites" ? "Favorites" :
+                                   root.homeKind === "history" ? "History" :
+                                   root.homeKind === "recent" ? "Continue Watching" : "Discover")
                             font.family: Style.font.family
                             font.pixelSize: Style.font.bodySmall
                             color: Qt.darker(Color.foreground, 1.25)
@@ -1376,9 +1488,9 @@ Panel {
 
                     RowLayout {
                         spacing: 4
-                        Button { text: "Home"; fontSize: Style.font.caption; selected: root.view === "home"; onClicked: root.goHome() }
-                        Button { text: "Favorites"; fontSize: Style.font.caption; selected: root.view === "grid" && root.homeKind === "favorites"; onClicked: root.showFavorites() }
-                        Button { text: "History"; fontSize: Style.font.caption; selected: root.view === "grid" && root.homeKind === "history"; onClicked: root.showWatchHistory() }
+                        Button { text: "Home"; fontSize: Style.font.caption; selected: root.view === "home" && (root.homeKind === "discover" || root.homeKind === "recent"); onClicked: root.goHome() }
+                        Button { text: "Favorites"; fontSize: Style.font.caption; selected: (root.view === "home" || root.view === "grid") && root.homeKind === "favorites"; onClicked: root.showFavorites() }
+                        Button { text: "History"; fontSize: Style.font.caption; selected: (root.view === "home" || root.view === "grid") && root.homeKind === "history"; onClicked: root.showWatchHistory() }
                         Button { text: "Downloads"; fontSize: Style.font.caption; selected: root.view === "downloads"; onClicked: root.showDownloads() }
                         Button { text: "Settings"; fontSize: Style.font.caption; selected: root.view === "settings"; onClicked: root.showSettings() }
                     }
@@ -1397,7 +1509,7 @@ Panel {
                 }
 
                 Button {
-                    text: "↻"
+                    text: "\u21bb"
                     tooltipText: "Refresh"
                     fontSize: Style.font.body
                     horizontalPadding: 10
@@ -1564,19 +1676,25 @@ Panel {
                             }
 
                             Button {
-                                text: "Continue Watching"
+                                text: "Discover"
                                 fontSize: Style.font.caption
-                                selected: root.homeKind === "recent"
-                                onClicked: root.loadHome(true)
+                                visible: root.homeKind === "discover" || root.homeKind === "recent"
+                                selected: root.homeKind === "discover"
+                                onClicked: root.showDiscover()
                             }
                             Button {
-                                text: "Favorites"
+                                text: "Continue Watching"
                                 fontSize: Style.font.caption
-                                selected: root.homeKind === "favorites"
-                                onClicked: root.showFavorites()
+                                visible: root.homeKind === "discover" || root.homeKind === "recent"
+                                selected: root.homeKind === "recent"
+                                onClicked: root.showContinueWatching()
                             }
-                            Button { text: "History"; fontSize: Style.font.caption; selected: root.homeKind === "history"; onClicked: root.showWatchHistory() }
-                            Button { text: "Clear history"; fontSize: Style.font.caption; visible: root.homeKind === "history"; onClicked: root.clearWatchHistory() }
+                            Button {
+                                text: "Clear history"
+                                fontSize: Style.font.caption
+                                visible: root.homeKind === "history"
+                                onClicked: root.clearWatchHistory()
+                            }
 
                         }
 
@@ -1593,8 +1711,9 @@ Panel {
                             reuseItems: true
                             visible: !root.homeLoading
                             model: homeModel
-                            cellWidth: Math.round(168 * panel.uiScale)
-                            cellHeight: Math.round(236 * panel.uiScale)
+                            readonly property int gridCols: Math.max(3, Math.floor(homeGrid.width / Math.round(145 * panel.uiScale)))
+                            cellWidth: Math.floor(homeGrid.width / Math.max(1, gridCols))
+                            cellHeight: Math.round(cellWidth * 1.40)
 
                             delegate: Item {
                                 id: homeDelegate
@@ -1647,6 +1766,27 @@ Panel {
                                                 font.bold: true
                                             }
 
+                                        }
+
+                                        Rectangle {
+                                            anchors.top: parent.top
+                                            anchors.right: parent.right
+                                            anchors.margins: 4
+                                            height: 16
+                                            radius: 3
+                                            color: "#d010141a"
+                                            visible: model.provider !== undefined && model.provider !== ""
+                                            implicitWidth: homeProvText.implicitWidth + 8
+
+                                            Text {
+                                                id: homeProvText
+                                                anchors.centerIn: parent
+                                                text: (model.provider || "").toUpperCase()
+                                                font.family: Style.font.family
+                                                font.pixelSize: 8
+                                                font.bold: true
+                                                color: (model.provider === "hianime") ? "#ff9933" : "#33b5e5"
+                                            }
                                         }
 
                                         Text {
@@ -1750,8 +1890,9 @@ Panel {
                     boundsBehavior: Flickable.StopAtBounds
                     maximumFlickVelocity: 4000
                     reuseItems: true
-                    cellWidth: Math.round(168 * panel.uiScale)
-                    cellHeight: Math.round(236 * panel.uiScale)
+                    readonly property int gridCols: Math.max(3, Math.floor(grid.width / Math.round(145 * panel.uiScale)))
+                    cellWidth: Math.floor(grid.width / Math.max(1, gridCols))
+                    cellHeight: Math.round(cellWidth * 1.40)
 
                     delegate: Item {
                         id: gridDelegate
@@ -1805,6 +1946,27 @@ Panel {
                                         font.bold: true
                                     }
 
+                                }
+
+                                Rectangle {
+                                    anchors.top: parent.top
+                                    anchors.right: parent.right
+                                    anchors.margins: 4
+                                    height: 16
+                                    radius: 3
+                                    color: "#d010141a"
+                                    visible: model.provider !== undefined && model.provider !== ""
+                                    implicitWidth: gridProvText.implicitWidth + 8
+
+                                    Text {
+                                        id: gridProvText
+                                        anchors.centerIn: parent
+                                        text: (model.provider || "").toUpperCase()
+                                        font.family: Style.font.family
+                                        font.pixelSize: 8
+                                        font.bold: true
+                                        color: (model.provider === "hianime") ? "#ff9933" : "#33b5e5"
+                                    }
                                 }
 
                                 Text {
@@ -1906,12 +2068,21 @@ Panel {
                                 sourceSize.height: 720
                                 asynchronous: true
                                 cache: true
-                                source: ""
+                                source: root.coverUrlOf(root.details)
+
+                                onStatusChanged: {
+                                    if (status === Image.Error && source.toString().startsWith("file://")) {
+                                        var rem = root.details ? (root.details.coverUrl || (typeof root.details.cover === "string" ? root.details.cover : (root.details.cover ? (root.details.cover.url || root.details.cover.large || root.details.cover.extraLarge) : ""))) : "";
+                                        if (rem && rem !== source.toString()) {
+                                            source = root._sanitizeCoverUrl(rem);
+                                        }
+                                    }
+                                }
                             }
 
                             Text {
                                 anchors.centerIn: parent
-                                visible: detailPoster.source === ""
+                                visible: detailPoster.source === "" || detailPoster.status === Image.Error || detailPoster.status === Image.Null
                                 text: "ア"
                                 font.family: Style.font.family
                                 font.pixelSize: 40
@@ -1965,6 +2136,10 @@ Panel {
                                         return "";
 
                                     var parts = [];
+                                    var prov = (root.details && root.details.provider) || (root.currentId && root.currentId.indexOf("hianime:") === 0 ? "hianime" : (root.currentId && root.currentId.indexOf("hiyori:") === 0 ? "hiyori" : ""));
+                                    if (prov)
+                                        parts.push(prov.toUpperCase());
+
                                     var year = root.details.year ? String(root.details.year) : "";
                                     if (year)
                                         parts.push(year);
@@ -2013,32 +2188,36 @@ Panel {
 
                                 Button {
                                     text: "Sub"
-                                    visible: root.currentId.indexOf("hiyori:") !== 0 || root.serversForMode("sub").length > 0
+                                    visible: root.serversForMode("sub").length > 0 || (root.details && root.details.has_sub !== false)
                                     fontSize: Style.font.caption
                                     selected: root.mode === "sub"
                                     onClicked: {
                                         if (root.mode !== "sub") {
                                             root.mode = "sub";
-                                            if (root.serversForMode("sub").length > 0 || root.currentId.indexOf("hiyori:") === 0) root.selectEpisode(root.currentEpisodeObject());
-                                            else if (root.curEp)
+                                            var cur = root.currentEpisodeObject();
+                                            if (cur) root.selectEpisode(cur);
+                                            else if (root.curEp) {
+                                                root.resumePosition = 0;
                                                 root.loadStreams(root.currentId, root.curEp, "sub");
-
+                                            }
                                         }
                                     }
                                 }
 
                                 Button {
                                     text: "Dub"
-                                    visible: root.currentId.indexOf("hiyori:") !== 0 || root.serversForMode("dub").length > 0
+                                    visible: root.serversForMode("dub").length > 0 || (root.details && root.details.has_dub === true)
                                     fontSize: Style.font.caption
                                     selected: root.mode === "dub"
                                     onClicked: {
                                         if (root.mode !== "dub") {
                                             root.mode = "dub";
-                                            if (root.serversForMode("dub").length > 0 || root.currentId.indexOf("hiyori:") === 0) root.selectEpisode(root.currentEpisodeObject());
-                                            else if (root.curEp)
+                                            var cur = root.currentEpisodeObject();
+                                            if (cur) root.selectEpisode(cur);
+                                            else if (root.curEp) {
+                                                root.resumePosition = 0;
                                                 root.loadStreams(root.currentId, root.curEp, "dub");
-
+                                            }
                                         }
                                     }
                                 }
@@ -2064,8 +2243,8 @@ Panel {
                                 Repeater {
                                     model: root.serversForMode(root.mode)
                                     Button {
-                                        text: String(modelData.server).toUpperCase()
-                                        tooltipText: modelData.title || modelData.episode_id
+                                        text: (modelData.provider ? "[" + String(modelData.provider).toUpperCase() + "] " : "") + String(modelData.server).toUpperCase()
+                                        tooltipText: (modelData.provider ? String(modelData.provider).toUpperCase() + " • " : "") + (modelData.title || modelData.episode_id)
                                         fontSize: Style.font.caption
                                         selected: root.selectedServer && root.selectedServer.episode_id === modelData.episode_id
                                         onClicked: root.selectServer(modelData)
@@ -2137,9 +2316,22 @@ Panel {
                                                 selected: epNum === root.curEp
                                                 opacity: isFiller ? 0.6 : 1
                                                 onClicked: {
-                                                    root.curEp = epNum;
-                                                    if (epObj) root.selectEpisode(epObj);
-                                                    else root.loadStreams(root.currentId, epNum, root.mode);
+                                                    var ep = (index >= 0 && index < root.episodes.length) ? root.episodes[index] : null;
+                                                    if (!ep && epNum) {
+                                                        for (var i = 0; i < root.episodes.length; i++) {
+                                                            if (String(root.episodes[i].number) === epNum) {
+                                                                ep = root.episodes[i];
+                                                                break;
+                                                            }
+                                                        }
+                                                    }
+                                                    if (ep) {
+                                                        root.selectEpisode(ep);
+                                                    } else {
+                                                        root.curEp = epNum;
+                                                        root.resumePosition = 0;
+                                                        root.loadStreams(root.currentId, epNum, root.mode);
+                                                    }
                                                 }
                                             }
 
@@ -2751,7 +2943,7 @@ Panel {
                                                 font.bold: true
                                             }
                                             Text {
-                                                text: root.downloadDestination || "~/Videos/Animechy"
+                                                text: root.downloadDestination || "~/Videos/Hakuchō"
                                                 color: Qt.darker(Color.foreground, 1.35)
                                                 font.family: Style.font.family
                                                 font.pixelSize: Style.font.caption
@@ -3086,7 +3278,7 @@ Panel {
                                             spacing: 2
 
                                             Text {
-                                                text: "Reset Animechy Settings"
+                                                text: "Reset Hakuchō Settings"
                                                 color: Color.foreground
                                                 font.family: Style.font.family
                                                 font.pixelSize: Style.font.bodySmall
@@ -3150,7 +3342,7 @@ Panel {
                         Layout.fillWidth: true
                         text: root.activeModal === "delete_download" ? "Delete download?" :
                               root.activeModal === "clear_failed" ? "Delete failed and cancelled downloads?" :
-                              root.activeModal === "reset_settings" ? "Reset Animechy settings?" : ""
+                              root.activeModal === "reset_settings" ? "Reset Hakuchō settings?" : ""
                         color: Color.foreground
                         font.family: Style.font.family
                         font.pixelSize: Style.font.title

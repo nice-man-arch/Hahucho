@@ -1,4 +1,4 @@
-"""Progress and controls for the existing Animechy ffmpeg download worker."""
+"""Progress and controls for the Hakuchō ffmpeg download worker."""
 import json
 import os
 import re
@@ -13,8 +13,9 @@ from pathlib import Path
 
 from providers.hianime import _safe_url
 
-DOWNLOAD_DIR = Path(os.environ.get("ANIMECHY_DOWNLOAD_DIR", Path.home() / "Videos" / "Animechy")).expanduser()
-_pool = ThreadPoolExecutor(max_workers=4, thread_name_prefix="animechy-download")
+_DEFAULT_DL_DIR = Path.home() / "Videos" / "Hakuchō"
+DOWNLOAD_DIR = Path(os.environ.get("HAKUCHO_DOWNLOAD_DIR") or os.environ.get("ANIMECHY_DOWNLOAD_DIR") or _DEFAULT_DL_DIR).expanduser()
+_pool = ThreadPoolExecutor(max_workers=4, thread_name_prefix="hakucho-download")
 _lock = threading.RLock()
 _condition = threading.Condition(_lock)
 _jobs = {}
@@ -33,6 +34,7 @@ def configure(store, download_dir=None, max_simultaneous=2):
         for saved in store.download_jobs():
             if saved.get("status") in ("queued", "downloading", "paused"):
                 saved.update(status="failed", error="Backend restarted before this download completed", finished=time.time())
+                store.save_download(saved)
             saved["path"] = Path(saved["path"])
             _jobs[saved["id"]] = saved
         _condition.notify_all()
@@ -84,7 +86,7 @@ def _notify(job):
     key = "notify_download_completed" if job["status"] == "completed" else "notify_download_failed" if job["status"] == "failed" else ""
     if key and _store.settings().get(key, True) and shutil.which("notify-send"):
         try:
-            subprocess.Popen(["notify-send", "Animechy download " + job["status"],
+            subprocess.Popen(["notify-send", "Hakuchō download " + job["status"],
                               f'{job["title"]} — Episode {job["episode"]}'],
                              stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                              stderr=subprocess.DEVNULL, start_new_session=True)

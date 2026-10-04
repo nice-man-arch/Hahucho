@@ -20,4 +20,4 @@ cp -a "$ROOT" "$DEST"
 rm -rf "$DEST/.git"
 omarchy-shell shell rescanPlugins
 omarchy plugin enable "$ID"
-echo "Animechy installed at $DEST. The backend starts when the Quickshell widget loads."
+echo "Hakuchō installed at $DEST. The backend starts when the Quickshell widget loads."

@@ -6,7 +6,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
-_test_cache = tempfile.TemporaryDirectory(prefix="animechy-tests-")
+_test_cache = tempfile.TemporaryDirectory(prefix="hakucho-tests-")
 os.environ["XDG_CACHE_HOME"] = _test_cache.name
 sys.path.insert(0, str(ROOT / "backend"))
 import server  # noqa: E402
@@ -38,7 +38,8 @@ class BackendTests(unittest.TestCase):
             "recent_items": lambda *a: [],
             "get_setting": lambda s, k, d=None: self._settings_store.get(k, d),
             "set_setting": lambda s, k, v: self._settings_store.update({k: v}),
-            "clear_settings": lambda s: self._settings_store.clear()
+            "clear_settings": lambda s: self._settings_store.clear(),
+            "clear_cache": lambda s: None
         })()); self.cache.start()
 
     def tearDown(self): self.cache.stop(); self.providers.stop()
@@ -182,8 +183,10 @@ class BackendTests(unittest.TestCase):
             db.touch("hiyori:21","One Piece","1","watch/kiwi/21/sub/episode-1","hiyori","21")
             db.update_progress("hiyori:21","watch/kiwi/21/sub/episode-1",872,1440)
             self.assertEqual(db.history()[0]["position"],872)
+            # Re-touching on playback start with position 0 should NOT wipe the saved progress
             db.touch("hiyori:21","One Piece","1","watch/kiwi/21/sub/episode-1","hiyori","21",position=0,duration=0)
             self.assertEqual(db.history()[0]["position"],872)
+            # episode_status should find by both episode_id and episode number
             statuses = db.episode_status("hiyori:21")
             self.assertEqual(statuses["watch/kiwi/21/sub/episode-1"]["position"], 872)
             self.assertEqual(statuses["1"]["position"], 872)

@@ -2,7 +2,7 @@
 # Start/check the self-contained local JSON backend. No Python packages are needed.
 set -euo pipefail
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-say() { printf '[animechy] %s\n' "$*"; }
+say() { printf '[hakucho] %s\n' "$*"; }
 command -v python3 >/dev/null || { echo 'Python 3 is required (Arch package: python)' >&2; exit 1; }
 python3 -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 12) else 1)' || { echo 'Python 3.12 or newer is required.' >&2; exit 1; }
 command -v curl >/dev/null || { echo 'curl is required (Arch package: curl)' >&2; exit 1; }
@@ -33,7 +33,7 @@ PY
       sleep 0.1
     done
   fi
-  runtime="${XDG_STATE_HOME:-$HOME/.local/state}/animechy"
+  runtime="${XDG_STATE_HOME:-$HOME/.local/state}/hakucho"
   mkdir -p "$runtime"
   setsid python3 "$DIR/backend/server.py" >>"$runtime/backend.log" 2>&1 </dev/null &
   for _ in {1..30}; do
