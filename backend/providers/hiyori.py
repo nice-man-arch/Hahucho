@@ -9,7 +9,7 @@ from urllib.request import Request, urlopen
 from .base import Provider, ProviderError
 
 BASE = "https://api.hiyori.tv"
-log = logging.getLogger("animechy")
+log = logging.getLogger("hakucho")
 
 
 def _anilist_id(value):
@@ -35,7 +35,7 @@ class HiyoriProvider(Provider):
     def _json(self, path, params=None):
         url = BASE + path + (("?" + urlencode(params)) if params else "")
         try:
-            req = Request(url, headers={"Accept": "application/json", "User-Agent": "Animechy/1.0"})
+            req = Request(url, headers={"Accept": "application/json", "User-Agent": "Hakucho/1.0"})
             with urlopen(req, timeout=16) as response:
                 if response.status != 200:
                     raise ProviderError(f"Hiyori returned HTTP {response.status}", "provider_unavailable")
@@ -57,7 +57,7 @@ class HiyoriProvider(Provider):
     def _search_anilist(self, query):
         gql = """
         query ($search: String) {
-          Page(page: 1, perPage: 24) {
+          Page(page: 1, perPage: 50) {
             media(search: $search, type: ANIME, sort: SEARCH_MATCH) {
               id
               idMal
@@ -77,7 +77,7 @@ class HiyoriProvider(Provider):
         """
         req = Request("https://graphql.anilist.co",
                       data=json.dumps({"query": gql, "variables": {"search": query}}).encode("utf-8"),
-                      headers={"Content-Type": "application/json", "User-Agent": "Animechy/1.0", "Accept": "application/json"})
+                      headers={"Content-Type": "application/json", "User-Agent": "Hakucho/1.0", "Accept": "application/json"})
         with urlopen(req, timeout=3.5) as response:
             payload = json.loads(response.read(10_000_000).decode("utf-8"))
             media_list = (payload.get("data") or {}).get("Page", {}).get("media") or []
@@ -106,7 +106,7 @@ class HiyoriProvider(Provider):
                 })
             return items
 
-    def trending(self, page=1, per_page=24):
+    def trending(self, page=1, per_page=50):
         gql = """
         query ($page: Int, $perPage: Int) {
           Page(page: $page, perPage: $perPage) {
@@ -129,7 +129,7 @@ class HiyoriProvider(Provider):
         try:
             req = Request("https://graphql.anilist.co",
                           data=json.dumps({"query": gql, "variables": {"page": page, "perPage": per_page}}).encode("utf-8"),
-                          headers={"Content-Type": "application/json", "User-Agent": "Animechy/1.0", "Accept": "application/json"})
+                          headers={"Content-Type": "application/json", "User-Agent": "Hakucho/1.0", "Accept": "application/json"})
             with urlopen(req, timeout=3.5) as response:
                 payload = json.loads(response.read(10_000_000).decode("utf-8"))
                 media_list = (payload.get("data") or {}).get("Page", {}).get("media") or []
@@ -160,7 +160,7 @@ class HiyoriProvider(Provider):
             log.warning("AniList trending failed: %s", e)
             return []
 
-    def genre(self, genre_name, page=1, per_page=24):
+    def genre(self, genre_name, page=1, per_page=50):
         gql = """
         query ($genre: String, $page: Int, $perPage: Int) {
           Page(page: $page, perPage: $perPage) {
@@ -183,7 +183,7 @@ class HiyoriProvider(Provider):
         try:
             req = Request("https://graphql.anilist.co",
                           data=json.dumps({"query": gql, "variables": {"genre": genre_name, "page": page, "perPage": per_page}}).encode("utf-8"),
-                          headers={"Content-Type": "application/json", "User-Agent": "Animechy/1.0", "Accept": "application/json"})
+                          headers={"Content-Type": "application/json", "User-Agent": "Hakucho/1.0", "Accept": "application/json"})
             with urlopen(req, timeout=3.5) as response:
                 payload = json.loads(response.read(10_000_000).decode("utf-8"))
                 media_list = (payload.get("data") or {}).get("Page", {}).get("media") or []
@@ -267,7 +267,7 @@ class HiyoriProvider(Provider):
             """
             req = Request("https://graphql.anilist.co",
                           data=json.dumps({"query": gql, "variables": {"id": int(aid)}}).encode("utf-8"),
-                          headers={"Content-Type": "application/json", "User-Agent": "Animechy/1.0", "Accept": "application/json"})
+                          headers={"Content-Type": "application/json", "User-Agent": "Hakucho/1.0", "Accept": "application/json"})
             with urlopen(req, timeout=3.5) as response:
                 payload = json.loads(response.read(10_000_000).decode("utf-8"))
                 m = (payload.get("data") or {}).get("Media")
@@ -279,7 +279,7 @@ class HiyoriProvider(Provider):
                     return {"id": f"hiyori:{aid}", "provider": self.name, "title": title,
                             "description": m.get("description") or "", "coverUrl": cover,
                             "cover": {"url": cover}, "year": str(m.get("seasonYear") or ""),
-                            "genre": ", ".join(m.get("genres") or []), "duration": f"{m.get('duration')} min" if m.get('duration') else "",
+                            "genre": ", ".join(m.get("genres") or []), "duration": f"{m.get('duration')} min" if m.get("duration") else "",
                             "anilist_id": int(aid), "mal_id": m.get("idMal"),
                             "synonyms": m.get("synonyms") or [], "externalLinks": [],
                             "format": m.get("format"), "status": m.get("status"),
