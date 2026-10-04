@@ -3301,6 +3301,109 @@ Panel {
                                 }
                             }
 
+                            // 6. ABOUT & CREDITS
+                            PanelSectionHeader { text: "ABOUT & CREDITS" }
+
+                            Rectangle {
+                                Layout.fillWidth: true
+                                height: aboutCardCol.implicitHeight + 20
+                                color: Util.alpha(Color.foreground, 0.05)
+                                radius: Style.cornerRadius
+                                border.width: 1
+                                border.color: Util.alpha(Color.foreground, 0.12)
+
+                                ColumnLayout {
+                                    id: aboutCardCol
+                                    anchors.fill: parent
+                                    anchors.margins: 12
+                                    spacing: 8
+
+                                    RowLayout {
+                                        Layout.fillWidth: true
+                                        spacing: 8
+
+                                        ColumnLayout {
+                                            Layout.fillWidth: true
+                                            spacing: 2
+
+                                            Text {
+                                                text: "Hakuchō (白鳥) v2.1.0"
+                                                color: Color.foreground
+                                                font.family: Style.font.family
+                                                font.pixelSize: Style.font.bodySmall
+                                                font.bold: true
+                                            }
+                                            Text {
+                                                text: "Anime streaming & download widget for Omarchy Linux."
+                                                color: Qt.darker(Color.foreground, 1.35)
+                                                font.family: Style.font.family
+                                                font.pixelSize: Style.font.caption
+                                            }
+                                        }
+
+                                        Text {
+                                            text: "GPL-3.0"
+                                            color: Color.foreground
+                                            font.family: Style.font.family
+                                            font.pixelSize: Style.font.caption
+                                            font.bold: true
+                                        }
+                                    }
+
+                                    PanelSeparator { Layout.fillWidth: true }
+
+                                    RowLayout {
+                                        Layout.fillWidth: true
+                                        spacing: 8
+
+                                        ColumnLayout {
+                                            Layout.fillWidth: true
+                                            spacing: 2
+
+                                            Text {
+                                                text: "Author & Maintainer"
+                                                color: Color.foreground
+                                                font.family: Style.font.family
+                                                font.pixelSize: Style.font.bodySmall
+                                                font.bold: true
+                                            }
+                                            Text {
+                                                text: "nice-man-arch (github.com/nice-man-arch/hakucho)"
+                                                color: Qt.darker(Color.foreground, 1.35)
+                                                font.family: Style.font.family
+                                                font.pixelSize: Style.font.caption
+                                            }
+                                        }
+                                    }
+
+                                    PanelSeparator { Layout.fillWidth: true }
+
+                                    RowLayout {
+                                        Layout.fillWidth: true
+                                        spacing: 8
+
+                                        ColumnLayout {
+                                            Layout.fillWidth: true
+                                            spacing: 2
+
+                                            Text {
+                                                text: "Original Creator & Acknowledgements"
+                                                color: Color.foreground
+                                                font.family: Style.font.family
+                                                font.pixelSize: Style.font.bodySmall
+                                                font.bold: true
+                                            }
+                                            Text {
+                                                text: "Yeshey Tenzin (@yesheytenzin) — Original Animechy creator for Omarchy."
+                                                color: Qt.darker(Color.foreground, 1.35)
+                                                font.family: Style.font.family
+                                                font.pixelSize: Style.font.caption
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+
                             Item { height: 10 }
                         }
                     }
