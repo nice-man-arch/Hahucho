@@ -5,15 +5,15 @@ import qs.Commons
 import qs.Ui
 
 BarWidget {
+    moduleName: "io.github.nice-man-arch.hakucho"
     id: root
-    moduleName: "io.github.nice-man-arch.animechy"
 
     visible: true
     implicitWidth: button.implicitWidth
     implicitHeight: button.implicitHeight
 
     readonly property bool opened: panelLoader.item ? panelLoader.item.opened === true : false
-    readonly property string setupScript: Qt.resolvedUrl("animechy-setup.sh").toString().replace(/^file:\/\//, "")
+    readonly property string setupScript: Qt.resolvedUrl("hakucho-setup.sh").toString().replace(/^file:\/\//, "")
     property bool backendReady: false
     property bool installing: false
     property string backendError: ""

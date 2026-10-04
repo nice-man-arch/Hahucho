@@ -78,7 +78,7 @@ Panel {
     property string selectedGenre: ""
     property bool genresExpanded: false
     property int genreGen: 0
-    readonly property string setupScript: Qt.resolvedUrl("animechy-setup.sh").toString().replace(/^file:\/\//, "")
+    readonly property string setupScript: Qt.resolvedUrl("hakucho-setup.sh").toString().replace(/^file:\/\//, "")
     property bool backendStarting: false
 
     function ensureBackendRunning() {
@@ -1265,7 +1265,7 @@ Panel {
         return false;
     }
 
-    moduleName: "io.github.nice-man-arch.animechy"
+    moduleName: "io.github.nice-man-arch.hakucho"
     implicitWidth: 820
     implicitHeight: 580
 

@@ -1,6 +1,6 @@
-# Animechy
+# Hakuchō (白鳥)
 
-Animechy is a Quickshell/Qt Quick anime client for Omarchy. The existing Animechy UI and HiAnime source adapter remain in place; a separate Python backend now coordinates HiAnime and Hiyori/Miruro provider data. mpv handles video playback.
+**Hakuchō** (formerly *Animechy*) is a fast, modern Quickshell anime streaming and download bar widget for Omarchy Linux. It coordinates multiple streaming providers (HiAnime and Hiyori) with intelligent auto-fallback, SQLite playback/favorite persistence, background health recovery, and hardware-accelerated `mpv` playback.
 
 ---
 
@@ -23,12 +23,12 @@ Animechy is a Quickshell/Qt Quick anime client for Omarchy. The existing Animech
 
 ---
 
-## 🚀 Quick Install (1-Command Setup)
+## 🚀 Quick Install
 
 ### Option 1: Git Clone (Manual Setup)
 
 ```sh
-git clone https://github.com/nice-man-arch/animechy.git ~/.config/omarchy/plugins/io.github.nice-man-arch.animechy && omarchy-shell shell rescanPlugins && omarchy plugin enable io.github.nice-man-arch.animechy
+git clone https://github.com/nice-man-arch/hakucho.git ~/.config/omarchy/plugins/io.github.nice-man-arch.hakucho && omarchy-shell shell rescanPlugins && omarchy plugin enable io.github.nice-man-arch.hakucho
 ```
 
 ### Option 2: Local Checkout Script
@@ -38,7 +38,7 @@ git clone https://github.com/nice-man-arch/animechy.git ~/.config/omarchy/plugin
 ```
 
 > **Why is the installation only one command?**
-> 1. **Zero Compilation / No Virtualenv**: Animechy's backend uses Python 3's built-in standard library (`urllib`, `sqlite3`, `http.server`, `json`). It requires no `pip install`, wheels, or C build tools.
+> 1. **Zero Compilation / No Virtualenv**: Hakuchō's backend uses Python 3's built-in standard library (`urllib`, `sqlite3`, `http.server`, `json`). It requires no `pip install`, wheels, or C build tools.
 > 2. **Standard Plugin Discovery**: Omarchy / Quickshell automatically looks for plugins inside `~/.config/omarchy/plugins/<id>`.
 > 3. **Self-Managing Lifecycle**: When the top bar widget loads, it automatically starts the local backend server (`backend/server.py`) and manages its lifecycle.
 > 4. **Hot-Reloading**: `omarchy-shell shell rescanPlugins` immediately loads the plugin into the running desktop environment without requiring a system reboot or session restart.
@@ -51,9 +51,9 @@ git clone https://github.com/nice-man-arch/animechy.git ~/.config/omarchy/plugin
 - **Python 3.12+** (standard library only)
 - `curl`, `mpv`, and `ffmpeg` (for playback and downloads)
 
-The backend stores SQLite state in `${XDG_CACHE_HOME:-~/.cache}/animechy/animechy.sqlite3`.
+The backend stores SQLite state in `${XDG_CACHE_HOME:-~/.cache}/hakucho/hakucho.sqlite3`.
 
-Click **ア** in the top bar to open Animechy. Plugin startup launches the loopback backend and logs to `${XDG_STATE_HOME:-~/.local/state}/animechy/backend.log`. Downloads are saved under `~/Videos/Animechy` (override with `ANIMECHY_DOWNLOAD_DIR`).
+Click **ア** in the top bar to open Hakuchō. Plugin startup launches the loopback backend and logs to `${XDG_STATE_HOME:-~/.local/state}/hakucho/backend.log`. Downloads are saved under `~/Videos/Hakuchō` (override with `HAKUCHO_DOWNLOAD_DIR`).
 
 To launch the backend manually while developing:
 
@@ -62,12 +62,12 @@ python backend/server.py
 curl 'http://127.0.0.1:8765/search?q=one%20piece'
 ```
 
-For provider routing diagnostics, start the backend with `ANIMECHY_DEBUG_SOURCES=1`. Debug logs include the selected episode number and exact provider episode reference, provider/server/language, resolved stream URL and the mpv argv. Stream/source responses are never stored in the metadata cache. This flag prints temporary third-party stream URLs to the backend log, so enable it only while diagnosing playback.
+For provider routing diagnostics, start the backend with `HAKUCHO_DEBUG_SOURCES=1`. Debug logs include the selected episode number and exact provider episode reference, provider/server/language, resolved stream URL and the mpv argv. Stream/source responses are never stored in the metadata cache. This flag prints temporary third-party stream URLs to the backend log, so enable it only while diagnosing playback.
 
 ## Architecture
 
 ```text
-Animechy Quickshell/QML
+Hakuchō Quickshell/QML
        │ local JSON HTTP
        ▼
 backend/server.py ── SQLite cache/history/favorites/provider references
@@ -86,7 +86,7 @@ Hiyori uses its documented JSON API directly: `/search`, `/info/{anilist_id}`, `
 
 Search runs both providers concurrently and combines their real results. A provider error is logged and reported if no provider succeeds. When HiAnime's MAL ID maps exactly to a Hiyori result, its server choices are joined to each matching episode; the HiAnime/ZokoAnime path remains available too. If a server fails, the episode stays open and the user can select another server. The UI does not silently change the selected server.
 
-Stream responses are not cached. The backend issues expiring, one-use source tokens; `/play` accepts a token instead of a caller-supplied URL, then invokes mpv with an argument array and no shell. Metadata/episode results use SQLite TTL caching. The mpv IPC socket is placed under the private Animechy cache directory and sampled for persistent playback position/duration.
+Stream responses are not cached. The backend issues expiring, one-use source tokens; `/play` accepts a token instead of a caller-supplied URL, then invokes mpv with an argument array and no shell. Metadata/episode results use SQLite TTL caching. The mpv IPC socket is placed under the private Hakuchō cache directory and sampled for persistent playback position/duration.
 
 ## Local library
 
@@ -111,7 +111,7 @@ The selected source can be downloaded in the background with `ffmpeg`, which rem
 | `POST /ipc` | JSON operation bridge used by the existing QML |
 | `POST /play` | consumes a short-lived source token and launches mpv |
 
-The `/ipc` bridge also accepts `download` (consumes a current source token), `downloads`, `download_control`, `download_retry`, `download_delete`, and `status`. Download jobs and settings use the existing Animechy SQLite database.
+The `/ipc` bridge also accepts `download` (consumes a current source token), `downloads`, `download_control`, `download_retry`, `download_delete`, and `status`. Download jobs and settings use the existing Hakuchō SQLite database.
 
 Errors use distinct kinds such as `no_results`, `provider_unavailable`, `network_failure`, `provider_blocked`, `anime_unavailable`, `episode_unavailable`, `no_stream`, `stream_url_invalid` and `mpv_failure`. Provider-qualified anime IDs route to exactly that adapter; source requests include the selected server's provider and exact episode reference. The backend binds to `127.0.0.1` by default.
 
@@ -136,12 +136,12 @@ curl -fsS 'https://api.hiyori.tv/search?query=one%20piece' | python -m json.tool
 ## Troubleshooting
 
 - **No search results:** check the query and inspect the backend log. An empty result means providers answered but had no matches.
-- **Provider unavailable or blocked:** inspect `~/.local/state/animechy/backend.log`; test Hiyori and HiAnime independently. Hiyori may rate-limit or reject some networks.
+- **Provider unavailable or blocked:** inspect `~/.local/state/hakucho/backend.log`; test Hiyori and HiAnime independently. Hiyori may rate-limit or reject some networks.
 - **Missing Hiyori servers on a HiAnime title:** cross-provider merging requires an exact MAL ID mapping. A title-only guess is intentionally not used.
 - **Server/source failure:** leave the episode open and select another server from those actually returned by the provider.
 - **Subtitles/audio:** external subtitle tracks are sent to mpv; HLS audio selection is handled by mpv. A provider may hard-sub its stream or provide no external subtitle file.
 - **mpv failure:** run `mpv --version` and install it with `sudo pacman -S mpv`.
-- **Widget missing:** use `omarchy plugin list`, enable `io.github.nice-man-arch.animechy`, and rescan plugins with `omarchy-shell shell rescanPlugins`.
+- **Widget missing:** use `omarchy plugin list`, enable `io.github.nice-man-arch.hakucho`, and rescan plugins with `omarchy-shell shell rescanPlugins`.
 
 ## License
 

@@ -1,9 +1,9 @@
 {
   "schemaVersion": 1,
-  "id": "io.github.nice-man-arch.animechy",
+  "id": "io.github.nice-man-arch.hakucho",
   "name": "Hakuchō",
   "version": "2.1.0",
-  "author": "tenzin",
+  "author": "nice-man-arch",
   "description": "Search, stream and download anime from your Omarchy bar through a local provider backend.",
   "kinds": ["bar-widget"],
   "entryPoints": {
